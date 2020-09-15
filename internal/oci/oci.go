@@ -49,7 +49,7 @@ type Runtime struct {
 // runtimes. Assumptions based on the fact that a container process runs
 // on the host will be limited to the RuntimeOCI implementation.
 type RuntimeImpl interface {
-	CreateContainer(*Container, string) error
+	CreateContainer(*Container, string, bool) error
 	StartContainer(*Container) error
 	ExecContainer(*Container, []string, io.Reader, io.WriteCloser, io.WriteCloser,
 		bool, <-chan remotecommand.TerminalSize) error
@@ -68,6 +68,8 @@ type RuntimeImpl interface {
 		int32, io.ReadWriteCloser) error
 	ReopenContainerLog(*Container) error
 	WaitContainerStateStopped(context.Context, *Container) error
+	CheckpointContainer(*Container, *rspec.Spec, bool) error
+	RestoreContainer(*Container, *rspec.Spec, int, string) error
 }
 
 // New creates a new Runtime with options provided
@@ -292,7 +294,7 @@ func (r *Runtime) RuntimeImpl(c *Container) (RuntimeImpl, error) {
 }
 
 // CreateContainer creates a container.
-func (r *Runtime) CreateContainer(c *Container, cgroupParent string) error {
+func (r *Runtime) CreateContainer(c *Container, cgroupParent string, restore bool) error {
 	// Instantiate a new runtime implementation for this new container
 	impl, err := r.newRuntimeImpl(c)
 	if err != nil {
@@ -304,7 +306,7 @@ func (r *Runtime) CreateContainer(c *Container, cgroupParent string) error {
 	r.runtimeImplMap[c.ID()] = impl
 	r.runtimeImplMapMutex.Unlock()
 
-	return impl.CreateContainer(c, cgroupParent)
+	return impl.CreateContainer(c, cgroupParent, restore)
 }
 
 // StartContainer starts a container.
@@ -476,4 +478,24 @@ type ExecSyncError struct {
 
 func (e *ExecSyncError) Error() string {
 	return fmt.Sprintf("command error: %+v, stdout: %s, stderr: %s, exit code %d", e.Err, e.Stdout.Bytes(), e.Stderr.Bytes(), e.ExitCode)
+}
+
+// CheckpointContainer checkpoints a container.
+func (r *Runtime) CheckpointContainer(c *Container, specgen *rspec.Spec, leaveRunning bool) error {
+	impl, err := r.RuntimeImpl(c)
+	if err != nil {
+		return err
+	}
+
+	return impl.CheckpointContainer(c, specgen, leaveRunning)
+}
+
+// RestoreContainer restores a container.
+func (r *Runtime) RestoreContainer(c *Container, sbSpec *rspec.Spec, infraPid int, cgroupParent string) error {
+	impl, err := r.RuntimeImpl(c)
+	if err != nil {
+		return err
+	}
+
+	return impl.RestoreContainer(c, sbSpec, infraPid, cgroupParent)
 }

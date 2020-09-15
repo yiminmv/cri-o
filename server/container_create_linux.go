@@ -48,7 +48,7 @@ func (s *Server) createContainerPlatform(container *oci.Container, cgroupParent 
 			return err
 		}
 	}
-	return s.Runtime().CreateContainer(container, cgroupParent)
+	return s.Runtime().CreateContainer(container, cgroupParent, false)
 }
 
 // makeAccessible changes the path permission and each parent directory to have --x--x--x

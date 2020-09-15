@@ -472,7 +472,7 @@ func (s *Server) CreateContainer(ctx context.Context, req *types.CreateContainer
 		return nil, errors.Wrap(err, "setting container config")
 	}
 
-	if err := ctr.SetNameAndID(); err != nil {
+	if err := ctr.SetNameAndID(""); err != nil {
 		return nil, errors.Wrap(err, "setting container name and ID")
 	}
 

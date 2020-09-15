@@ -277,6 +277,10 @@ namespaces_dir = "{{ .NamespacesDir }}"
 # pinns_path is the path to find the pinns binary, which is needed to manage namespace lifecycle
 pinns_path = "{{ .PinnsPath }}"
 
+# criu_path is the path to find the criu binary, which is needed to
+# checkpoint and restore container or pods.
+criu_path = "{{ .CriuPath }}"
+
 # default_runtime is the _name_ of the OCI runtime to be used as the default.
 # The name is matched against the runtimes map below. If this value is changed,
 # the corresponding existing entry from the runtimes map below will be ignored.

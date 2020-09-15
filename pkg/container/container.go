@@ -37,7 +37,9 @@ type Container interface {
 	SetConfig(*types.ContainerConfig, *types.PodSandboxConfig) error
 
 	// SetNameAndID sets a container name and ID
-	SetNameAndID() error
+	// It can either generate a new ID or use an existing ID
+	// if specified as parameter (for container restore)
+	SetNameAndID(string) error
 
 	// Config returns the container CRI configuration
 	Config() *types.ContainerConfig
@@ -78,6 +80,13 @@ type Container interface {
 	// it takes the sandbox's label, which it falls back upon
 	SelinuxLabel(string) ([]string, error)
 
+	// SetRestore marks the container as being restored from a checkpoint
+	SetRestore(bool)
+
+	// Restore returns if the container is marked as being
+	// restored from a checkpoint
+	Restore() bool
+
 	// spec functions
 
 	// returns the spec
@@ -106,6 +115,7 @@ type container struct {
 	id         string
 	name       string
 	privileged bool
+	restore    bool
 	spec       generate.Generator
 }
 
@@ -285,7 +295,7 @@ func (c *container) SetConfig(config *types.ContainerConfig, sboxConfig *types.P
 }
 
 // SetNameAndID sets a container name and ID
-func (c *container) SetNameAndID() error {
+func (c *container) SetNameAndID(oldID string) error {
 	if c.config == nil {
 		return errors.New("config is not set")
 	}
@@ -298,7 +308,12 @@ func (c *container) SetNameAndID() error {
 		return errors.New("sandbox metadata is nil")
 	}
 
-	id := stringid.GenerateNonCryptoID()
+	var id string
+	if oldID == "" {
+		id = stringid.GenerateNonCryptoID()
+	} else {
+		id = oldID
+	}
 	name := strings.Join([]string{
 		"k8s",
 		c.config.Metadata.Name,
@@ -331,6 +346,17 @@ func (c *container) ID() string {
 // Name returns the container name
 func (c *container) Name() string {
 	return c.name
+}
+
+// Restore returns if the container is marked as being
+// restored from a checkpoint
+func (c *container) Restore() bool {
+	return c.restore
+}
+
+// SetRestore marks the container as being restored from a checkpoint
+func (c *container) SetRestore(restore bool) {
+	c.restore = restore
 }
 
 // SetPrivileged sets the privileged bool for the container

@@ -249,6 +249,9 @@ the container runtime configuration.
 **pinns_path**=""
   The path to find the pinns binary, which is needed to manage namespace lifecycle
 
+**criu_path**=""
+  The path to find the criu binary, which is needed to checkpoint and restore containers or pods.
+
 ### CRIO.RUNTIME.RUNTIMES TABLE
 The "crio.runtime.runtimes" table defines a list of OCI compatible runtimes.  The runtime to use is picked based on the runtime_handler provided by the CRI.  If no runtime_handler is provided, the runtime will be picked based on the level of trust of the workload.
 

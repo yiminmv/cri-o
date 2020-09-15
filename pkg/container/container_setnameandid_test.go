@@ -29,7 +29,7 @@ var _ = t.Describe("Container:SetNameAndID", func() {
 		setupContainerWithMetadata(metadata)
 
 		// When
-		err := sut.SetNameAndID()
+		err := sut.SetNameAndID("")
 
 		// Then
 		Expect(err).To(BeNil())
@@ -45,7 +45,7 @@ var _ = t.Describe("Container:SetNameAndID", func() {
 		setupContainerWithMetadata(metadata)
 
 		// When
-		err := sut.SetNameAndID()
+		err := sut.SetNameAndID("")
 
 		// Then
 		Expect(err).To(BeNil())
@@ -57,7 +57,7 @@ var _ = t.Describe("Container:SetNameAndID", func() {
 		container, err := container.New(context.Background())
 		Expect(err).To(BeNil())
 
-		err = container.SetNameAndID()
+		err = container.SetNameAndID("")
 
 		// Then
 		Expect(container).ToNot(BeNil())
