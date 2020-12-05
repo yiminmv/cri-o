@@ -634,21 +634,25 @@ type CheckpointContainerOptions struct {
 }
 
 type CheckpointContainerRequest struct {
-	ContainerID string
-	Options     *CheckpointContainerOptions
+	ID      string
+	Options *CheckpointContainerOptions
 }
 
 type RestoreContainerOptions struct {
 	CommonOptions *CheckpointRestoreOptions
 	PodSandboxID  string
 	Name          string
+	Labels        map[string]string
+	Annotations   map[string]string
 }
 
 type RestoreContainerRequest struct {
-	ContainerID string
-	Options     *RestoreContainerOptions
+	ID      string
+	Options *RestoreContainerOptions
 }
 
 type RestoreContainerResponse struct {
-	ContainerID string
+	ID                 string
+	Pod                bool
+	RestoredContainers []string
 }
