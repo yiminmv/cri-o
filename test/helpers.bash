@@ -543,3 +543,9 @@ function fail() {
 function is_cgroup_v2() {
     test "$(stat -f -c%T /sys/fs/cgroup)" = "cgroup2fs"
 }
+
+function has_criu() {
+    if [ ! -e "$(command -v criu)" ]; then
+        skip "CRIU binary not found"
+    fi
+}
