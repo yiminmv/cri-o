@@ -448,12 +448,13 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 
 	// set DNS options
 	var resolvPath string
+	var dnsConfig libsandbox.DNSConfig
 	if sbox.Config().DNSConfig != nil {
-		dnsServers := sbox.Config().DNSConfig.Servers
-		dnsSearches := sbox.Config().DNSConfig.Searches
-		dnsOptions := sbox.Config().DNSConfig.Options
+		dnsConfig.Servers = sbox.Config().DNSConfig.Servers
+		dnsConfig.Searches = sbox.Config().DNSConfig.Searches
+		dnsConfig.Options = sbox.Config().DNSConfig.Options
 		resolvPath = fmt.Sprintf("%s/resolv.conf", podContainer.RunDir)
-		err = parseDNSOptions(dnsServers, dnsSearches, dnsOptions, resolvPath)
+		err = parseDNSOptions(dnsConfig.Servers, dnsConfig.Searches, dnsConfig.Options, resolvPath)
 		if err != nil {
 			err1 := removeFile(resolvPath)
 			if err1 != nil {
@@ -676,6 +677,8 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 	if err != nil {
 		return nil, err
 	}
+
+	sb.SetDNSConfig(&dnsConfig)
 
 	if err := s.addSandbox(sb); err != nil {
 		return nil, err

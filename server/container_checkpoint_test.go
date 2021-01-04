@@ -6,6 +6,8 @@ import (
 
 	cstorage "github.com/containers/storage"
 	"github.com/containers/storage/pkg/archive"
+	"github.com/cri-o/cri-o/internal/hostport"
+	"github.com/cri-o/cri-o/internal/lib/sandbox"
 	"github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/server/cri/types"
 	"github.com/golang/mock/gomock"
@@ -99,6 +101,57 @@ var _ = t.Describe("ContainerCheckpoint", func() {
 				State: specs.State{Status: oci.ContainerStateRunning},
 			})
 			testContainer.SetSpec(&specs.Spec{Version: "1.0.0"})
+
+			gomock.InOrder(
+				storeMock.EXPECT().Container(gomock.Any()).Return(&cstorage.Container{}, nil),
+				storeMock.EXPECT().Changes(gomock.Any(), gomock.Any()).Return([]archive.Change{}, nil),
+				runtimeServerMock.EXPECT().StopContainer(gomock.Any()).Return(nil),
+			)
+			// When
+			err := sut.CheckpointContainer(context.Background(),
+				&types.CheckpointContainerRequest{
+					ID: testSandbox.ID(),
+					Options: &types.CheckpointContainerOptions{
+						CommonOptions: &types.CheckpointRestoreOptions{
+							Archive: "cp.tar",
+						},
+					},
+				})
+
+			// Then
+			Expect(err).To(BeNil())
+		})
+		It("should succeed with valid pod id and archive and DNSConfig and PortMapping", func() {
+			// Given
+			addContainerAndSandbox()
+
+			testContainer.SetState(&oci.ContainerState{
+				State: specs.State{Status: oci.ContainerStateRunning},
+			})
+			testContainer.SetSpec(&specs.Spec{Version: "1.0.0"})
+			testSandbox.SetDNSConfig(&sandbox.DNSConfig{
+				Servers:  []string{"server1", "server2"},
+				Searches: []string{"searche1", "searches"},
+				Options:  []string{"option1", "option2"},
+			})
+			testSandbox.SetPortMappings([]*hostport.PortMapping{
+				{
+					ContainerPort: 2222,
+					HostPort:      1222,
+					Protocol:      "TCP",
+				},
+				{
+					ContainerPort: 2222,
+					HostPort:      1223,
+					Protocol:      "UDP",
+				},
+				{
+					ContainerPort: 2222,
+					HostIP:        "127.0.0.2",
+					HostPort:      1224,
+					Protocol:      "SCTP",
+				},
+			})
 
 			gomock.InOrder(
 				storeMock.EXPECT().Container(gomock.Any()).Return(&cstorage.Container{}, nil),
