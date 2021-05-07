@@ -372,7 +372,7 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 		labelOptions = utils.GetLabelOptions(selinuxConfig)
 	}
 
-	privileged := s.privilegedSandbox(req)
+	privileged := true // s.privilegedSandbox(req)
 
 	podContainer, err := s.StorageRuntimeServer().CreatePodSandbox(s.config.SystemContext,
 		sbox.Name(), sbox.ID(),

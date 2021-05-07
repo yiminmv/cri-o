@@ -138,6 +138,10 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 	if err := ctr.SetPrivileged(); err != nil {
 		return nil, err
 	}
+	log.Infof(ctx, "sanbox privileged status: %v, container privileged status %v, %v",
+		ctr.Config().Linux.SecurityContext.Privileged,
+		ctr.SandboxConfig().Linux.SecurityContext.Privileged,
+		ctr.Privileged())
 	securityContext := containerConfig.Linux.SecurityContext
 
 	// creates a spec Generator with the default spec.
@@ -238,6 +242,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 	if err != nil {
 		return nil, err
 	}
+	log.Infof(ctx, "current container %s privileged status: %v", containerInfo.ID, ctr.Privileged())
 	defer func() {
 		if retErr != nil {
 			log.Infof(ctx, "createCtrLinux: deleting container %s from storage", containerInfo.ID)

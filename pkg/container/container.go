@@ -361,6 +361,7 @@ func (c *container) SetRestore(restore bool) {
 
 // SetPrivileged sets the privileged bool for the container
 func (c *container) SetPrivileged() error {
+	c.privileged = true
 	if c.config == nil {
 		return nil
 	}
