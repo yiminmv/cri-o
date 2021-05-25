@@ -225,7 +225,7 @@ func (r *runtimeOCI) CreateContainer(c *Container, cgroupParent string, restore 
 		if ss.err != nil {
 			return fmt.Errorf("error reading container (probably exited) json message: %v", ss.err)
 		}
-		logrus.Debugf("Received container pid: %d", ss.si.Pid)
+		logrus.Infof("Received container pid: %d", ss.si.Pid)
 		pid = ss.si.Pid
 		if ss.si.Pid == -1 {
 			if ss.si.Message != "" {
@@ -1332,8 +1332,6 @@ func (r *runtimeOCI) CheckpointContainer(c *Container, specgen *rspec.Spec, leav
 
 // RestoreContainer restores a container.
 func (r *runtimeOCI) RestoreContainer(c *Container, sbSpec *rspec.Spec, infraPid int, cgroupParent string) error {
-	c.opLock.Lock()
-	defer c.opLock.Unlock()
 
 	if err := r.checkpointRestoreSupported(); err != nil {
 		return err
