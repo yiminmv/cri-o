@@ -253,6 +253,9 @@ the container runtime configuration.
 **pinns_path**=""
   The path to find the pinns binary, which is needed to manage namespace lifecycle
 
+**criu_path**=""
+  The path to find the criu binary, which is needed to checkpoint and restore containers or pods.
+
 **absent_mount_sources_to_reject**=[]
   A list of paths that, when absent from the host, will cause a container creation to fail (as opposed to the current behavior of creating a directory).
 

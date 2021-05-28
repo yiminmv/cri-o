@@ -53,6 +53,21 @@ func (mr *MockRuntimeImplMockRecorder) AttachContainer(arg0, arg1, arg2, arg3, a
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).AttachContainer), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
 }
 
+
+// CheckpointContainer mocks base method
+func (m *MockRuntimeImpl) CheckpointContainer(arg0 *oci.Container, arg1 *specs.Spec, arg2 bool) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "CheckpointContainer", arg0, arg1, arg2)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// CheckpointContainer indicates an expected call of CheckpointContainer
+func (mr *MockRuntimeImplMockRecorder) CheckpointContainer(arg0, arg1, arg2 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckpointContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).CheckpointContainer), arg0, arg1, arg2)
+}
+
 // ContainerStats mocks base method.
 func (m *MockRuntimeImpl) ContainerStats(arg0 context.Context, arg1 *oci.Container, arg2 string) (*oci.ContainerStats, error) {
 	m.ctrl.T.Helper()
@@ -167,8 +182,23 @@ func (mr *MockRuntimeImplMockRecorder) ReopenContainerLog(arg0, arg1 interface{}
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReopenContainerLog", reflect.TypeOf((*MockRuntimeImpl)(nil).ReopenContainerLog), arg0, arg1)
 }
 
+// RestoreContainer mocks base method
+func (m *MockRuntimeImpl) RestoreContainer(arg0 *oci.Container, arg1 *specs.Spec, arg2 int, arg3 string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RestoreContainer", arg0, arg1, arg2, arg3)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RestoreContainer indicates an expected call of RestoreContainer
+func (mr *MockRuntimeImplMockRecorder) RestoreContainer(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestoreContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).RestoreContainer), arg0, arg1, arg2, arg3)
+}
+
 // SignalContainer mocks base method.
 func (m *MockRuntimeImpl) SignalContainer(arg0 context.Context, arg1 *oci.Container, arg2 syscall.Signal) error {
+
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "SignalContainer", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)

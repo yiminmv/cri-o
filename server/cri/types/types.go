@@ -625,6 +625,43 @@ type ContainerStatsFilter struct {
 	LabelSelector map[string]string
 }
 
+
+type CheckpointRestoreOptions struct {
+	Keep           bool
+	TCPEstablished bool
+	Archive        string
+	Compression    int64
+}
+
+type CheckpointContainerOptions struct {
+	CommonOptions *CheckpointRestoreOptions
+	LeaveRunning  bool
+}
+
+type CheckpointContainerRequest struct {
+	ID      string
+	Options *CheckpointContainerOptions
+}
+
+type RestoreContainerOptions struct {
+	CommonOptions *CheckpointRestoreOptions
+	PodSandboxID  string
+	Name          string
+	Labels        map[string]string
+	Annotations   map[string]string
+}
+
+type RestoreContainerRequest struct {
+	ID      string
+	Options *RestoreContainerOptions
+}
+
+type RestoreContainerResponse struct {
+	ID                 string
+	Pod                bool
+	RestoredContainers []string
+}
+
 type SecurityProfile struct {
 	ProfileType  SecurityProfileType
 	LocalhostRef string

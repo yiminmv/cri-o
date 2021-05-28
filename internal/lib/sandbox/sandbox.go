@@ -56,6 +56,7 @@ type Sandbox struct {
 	annotations        map[string]string
 	infraContainer     *oci.Container
 	metadata           *Metadata
+	dnsConfig          *DNSConfig
 	nsOpts             *types.NamespaceOption
 	stopMutex          sync.RWMutex
 	created            bool
@@ -78,6 +79,15 @@ type Metadata struct {
 
 	// Attempt number of creating the sandbox.
 	Attempt uint32 `json:"attempt,omitempty"`
+}
+
+type DNSConfig struct {
+	// List of DNS servers
+	Servers []string
+	// List of DNS search domains
+	Searches []string
+	// List of DNS options
+	Options []string
 }
 
 // DefaultShmSize is the default shm size
@@ -143,6 +153,16 @@ func (s *Sandbox) SetNamespaceOptions(nsOpts *types.NamespaceOption) {
 // NamespaceOptions returns the namespace options for the sandbox
 func (s *Sandbox) NamespaceOptions() *types.NamespaceOption {
 	return s.nsOpts
+}
+
+// SetDNSConfig sets the DNSConfig
+func (s *Sandbox) SetDNSConfig(dnsConfig *DNSConfig) {
+	s.dnsConfig = dnsConfig
+}
+
+// DNSConfig returns the dnsConfig for the sandbox
+func (s *Sandbox) DNSConfig() *DNSConfig {
+	return s.dnsConfig
 }
 
 // StopMutex returns the mutex to use when stopping the sandbox

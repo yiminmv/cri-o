@@ -208,6 +208,10 @@ type RuntimeConfig struct {
 	// will only be able to write to volumes mounted into them
 	ReadOnly bool `toml:"read_only"`
 
+	// checkpointRestore instructs the runtime that checkpoint/restore functionality
+	// is not available. Only used internally to track the availability of the CRIU binary.
+	checkpointRestore bool
+
 	// ConmonEnv is the environment variable list for conmon process.
 	ConmonEnv []string `toml:"conmon_env"`
 
@@ -301,6 +305,10 @@ type RuntimeConfig struct {
 	// PinNSPath is the path to find the pinns binary, which is needed
 	// to manage namespace lifecycle
 	PinnsPath string `toml:"pinns_path"`
+
+	// CriuPath is the path to find the criu binary, which is needed
+	// to checkpoint and restore containers
+	CriuPath string `toml:"criu_path"`
 
 	// Runtimes defines a list of OCI compatible runtimes. The runtime to
 	// use is picked based on the runtime_handler provided by the CRI. If
@@ -909,6 +917,18 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 			return errors.Wrapf(err, "initialize nsmgr")
 		}
 
+		if err := c.ValidateCriuPath("criu"); err != nil {
+			c.checkpointRestore = false
+			logrus.Infof("checkpoint/restore support disabled")
+		} else {
+			c.checkpointRestore = true
+			logrus.Infof("checkpoint/restore support enabled")
+		}
+
+		if err := os.MkdirAll(c.NamespacesDir, 0o755); err != nil {
+			return errors.Wrap(err, "invalid namespaces_dir")
+		}
+
 		if c.SeccompUseDefaultWhenEmpty {
 			c.seccompConfig.SetDefaultWhenEmpty()
 		}
@@ -982,6 +1002,13 @@ func (c *RuntimeConfig) ValidatePinnsPath(executable string) error {
 	return err
 }
 
+func (c *RuntimeConfig) ValidateCriuPath(executable string) error {
+	var err error
+	c.CriuPath, err = validateExecutablePath(executable, c.CriuPath)
+
+	return err
+}
+
 // Seccomp returns the seccomp configuration
 func (c *RuntimeConfig) Seccomp() *seccomp.Config {
 	return c.seccompConfig
@@ -1009,6 +1036,10 @@ func (c *RuntimeConfig) Ulimits() []ulimits.Ulimit {
 
 func (c *RuntimeConfig) Devices() []device.Device {
 	return c.deviceConfig.Devices()
+}
+
+func (c *RuntimeConfig) CheckpointRestore() bool {
+	return c.checkpointRestore
 }
 
 func validateExecutablePath(executable, currentPath string) (string, error) {

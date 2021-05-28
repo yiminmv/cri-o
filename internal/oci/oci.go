@@ -69,6 +69,8 @@ type RuntimeImpl interface {
 		int32, io.ReadWriteCloser) error
 	ReopenContainerLog(context.Context, *Container) error
 	WaitContainerStateStopped(context.Context, *Container) error
+	CheckpointContainer(*Container, *rspec.Spec, bool) error
+	RestoreContainer(*Container, *rspec.Spec, int, string) error
 }
 
 // New creates a new Runtime with options provided
@@ -437,6 +439,25 @@ func (e *ExecSyncError) Error() string {
 	return fmt.Sprintf("command error: %+v, stdout: %s, stderr: %s, exit code %d", e.Err, e.Stdout.Bytes(), e.Stderr.Bytes(), e.ExitCode)
 }
 
+// CheckpointContainer checkpoints a container.
+func (r *Runtime) CheckpointContainer(c *Container, specgen *rspec.Spec, leaveRunning bool) error {
+	impl, err := r.RuntimeImpl(c)
+	if err != nil {
+		return err
+	}
+
+	return impl.CheckpointContainer(c, specgen, leaveRunning)
+}
+
+// RestoreContainer restores a container.
+func (r *Runtime) RestoreContainer(c *Container, sbSpec *rspec.Spec, infraPid int, cgroupParent string) error {
+	impl, err := r.RuntimeImpl(c)
+	if err != nil {
+		return err
+	}
+
+	return impl.RestoreContainer(c, sbSpec, infraPid, cgroupParent)
+}
 // BuildContainerdBinaryName() is responsible for ensuring the binary passed will
 // be properly converted to the containerd binary naming pattern.
 //

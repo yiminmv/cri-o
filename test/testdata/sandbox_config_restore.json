@@ -1,17 +1,12 @@
 {
 	"metadata": {
-		"name": "podsandbox1",
-		"uid": "redhat-test-crio",
-		"namespace": "redhat.test.crio",
+		"name": "podsandbox2",
+		"uid": "redhat-test-crio-restore",
+		"namespace": "redhat.test.crio.restore",
 		"attempt": 1
 	},
-	"hostname": "crictl_host",
+	"hostname": "crictl_host_restore",
 	"log_directory": "",
-	"dns_config": {
-		"searches": [
-			"8.8.8.8"
-		]
-	},
 	"port_mappings": [],
 	"resources": {
 		"cpu": {
@@ -33,11 +28,16 @@
 	"linux": {
 		"cgroup_parent": "pod_123-456.slice",
 		"security_context": {
-			"privileged": true,
 			"namespace_options": {
 				"network": 0,
 				"pid": 1,
 				"ipc": 0
+			},
+			"selinux_options": {
+				"user": "system_u",
+				"role": "system_r",
+				"type": "svirt_lxc_net_t",
+				"level": "s0:c4,c5"
 			}
 		}
 	}

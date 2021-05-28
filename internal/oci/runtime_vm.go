@@ -951,3 +951,19 @@ func (r *runtimeVM) closeIO(ctrID, execID string) error {
 
 	return nil
 }
+
+// CheckpointContainer not implemented for runtimeVM
+func (r *runtimeVM) CheckpointContainer(c *Container, specgen *rspec.Spec, leaveRunning bool) error {
+	logrus.Debug("runtimeVM.CheckpointContainer() start")
+	defer logrus.Debug("runtimeVM.CheckpointContainer() end")
+
+	return errors.New("Checkpointing not implemented for runtimeVM")
+}
+
+// RestoreContainer not implemented for runtimeVM
+func (r *runtimeVM) RestoreContainer(c *Container, sbSpec *rspec.Spec, infraPid int, cgroupParent string) error {
+	logrus.Debug("runtimeVM.RestoreContainer() start")
+	defer logrus.Debug("runtimeVM.RestoreContainer() end")
+
+	return errors.New("Restoring not implemented for runtimeVM")
+}
