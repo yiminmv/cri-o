@@ -98,13 +98,32 @@ function wait_until_exit() {
 	[ -n "$output" ]
 	echo "$output" | jq -e ".info.privileged == false"
 
+	YEAR=$(date +"%Y")
+	CREATED=$(echo "$output" | jq -re '.status.createdAt')
+	echo "$output" | jq -e '.status.createdAt | startswith("'"$YEAR"'")'
+
+	echo "$output" | jq -e '.status.startedAt | startswith("'"$YEAR"'") | not'
+	echo "$output" | jq -e '.status.finishedAt | startswith("'"$YEAR"'") | not'
+
 	crictl start "$ctr_id"
-	crictl inspect "$ctr_id"
+	output=$(crictl inspect "$ctr_id")
+	[[ "$CREATED" == $(echo "$output" | jq -re '.status.createdAt') ]]
+
+	STARTED=$(echo "$output" | jq -re '.status.startedAt')
+	echo "$output" | jq -e '.status.startedAt | startswith("'"$YEAR"'")'
+
+	echo "$output" | jq -e '.status.finishedAt | startswith("'"$YEAR"'") | not'
+
 	output=$(crictl ps --quiet --state running)
 	[[ "$output" == "$ctr_id" ]]
 
 	crictl stop "$ctr_id"
-	crictl inspect "$ctr_id"
+	output=$(crictl inspect "$ctr_id")
+
+	[[ "$CREATED" == $(echo "$output" | jq -re '.status.createdAt') ]]
+	[[ "$STARTED" == $(echo "$output" | jq -re '.status.startedAt') ]]
+	echo "$output" | jq -e '.status.finishedAt | startswith("'"$YEAR"'")'
+
 	output=$(crictl ps --quiet --state exited)
 	[[ "$output" == "$ctr_id" ]]
 
@@ -823,38 +842,6 @@ function wait_until_exit() {
 	! crictl create "$pod_id" "$newconfig" "$TESTDATA"/sandbox_config.json
 }
 
-@test "ctr expose metrics with default port" {
-	# start crio with default port 9090
-	port="9090"
-	CONTAINER_ENABLE_METRICS=true start_crio
-	if ! port_listens "$port"; then
-		skip "Metrics port $port not listening"
-	fi
-
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
-
-	# get metrics
-	curl http://localhost:$port/metrics -k
-}
-
-@test "ctr expose metrics with custom port" {
-	# start crio with custom port
-	port="4321"
-	CONTAINER_ENABLE_METRICS=true CONTAINER_METRICS_PORT=$port start_crio
-	if ! port_listens "$port"; then
-		skip "Metrics port $port not listening"
-	fi
-
-	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
-	ctr_id=$(crictl create "$pod_id" "$TESTDATA"/container_redis.json "$TESTDATA"/sandbox_config.json)
-	crictl start "$ctr_id"
-
-	# get metrics
-	curl http://localhost:$port/metrics -k
-}
-
 @test "privileged ctr -- check for rw mounts" {
 	# Can't run privileged container in userns
 	if test -n "$CONTAINER_UID_MAPPINGS"; then
@@ -899,4 +886,19 @@ function wait_until_exit() {
 
 	output=$(crictl exec --sync "$ctr_id" env)
 	[[ "$output" == *"NSS_SDB_USE_CACHE=no"* ]]
+}
+
+@test "ctr with absent mount that should be rejected" {
+	ABSENT_DIR="$TESTDIR/notthere"
+	jq --arg path "$ABSENT_DIR" \
+		'  .mounts = [ {
+			host_path: $path,
+			container_path: $path
+		} ]' \
+		"$TESTDATA"/container_redis.json > "$TESTDIR/config"
+
+	CONTAINER_ABSENT_MOUNT_SOURCES_TO_REJECT="$ABSENT_DIR" start_crio
+
+	pod_id=$(crictl runp "$TESTDATA"/sandbox_config.json)
+	! crictl create "$pod_id" "$TESTDIR/config" "$TESTDATA"/sandbox_config.json
 }

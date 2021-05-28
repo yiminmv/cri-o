@@ -248,7 +248,7 @@ ${GO_MOD_OUTDATED}:
 	$(call go-build,./vendor/github.com/psampaz/go-mod-outdated)
 
 ${GOLANGCI_LINT}:
-	export VERSION=v1.32.2 \
+	export VERSION=v1.35.2 \
 		URL=https://raw.githubusercontent.com/golangci/golangci-lint \
 		BINDIR=${BUILD_BIN_PATH} && \
 	curl -sSfL $$URL/$$VERSION/install.sh | sh -s $$VERSION
@@ -392,9 +392,16 @@ bundle:
 bundle-test:
 	sudo contrib/bundle/test
 
+bundle-test-e2e:
+	sudo contrib/bundle/test-e2e
+
 bundles:
 	contrib/bundle/build amd64
 	contrib/bundle/build arm64
+
+get-script:
+	sed -i '/# INCLUDE/q' scripts/get
+	cat contrib/bundle/install-paths contrib/bundle/install >> scripts/get
 
 install: .gopathok install.bin install.man install.completions install.systemd install.config
 
@@ -520,4 +527,5 @@ metrics-exporter: bin/metrics-exporter
 	upload-artifacts \
 	bin/metrics-exporter \
 	metrics-exporter \
-	release
+	release \
+	get-script

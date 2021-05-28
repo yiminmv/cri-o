@@ -6,51 +6,53 @@ package ocimock
 
 import (
 	context "context"
+	io "io"
+	reflect "reflect"
+	syscall "syscall"
+
 	oci "github.com/cri-o/cri-o/internal/oci"
 	gomock "github.com/golang/mock/gomock"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	io "io"
 	remotecommand "k8s.io/client-go/tools/remotecommand"
-	reflect "reflect"
-	syscall "syscall"
 )
 
-// MockRuntimeImpl is a mock of RuntimeImpl interface
+// MockRuntimeImpl is a mock of RuntimeImpl interface.
 type MockRuntimeImpl struct {
 	ctrl     *gomock.Controller
 	recorder *MockRuntimeImplMockRecorder
 }
 
-// MockRuntimeImplMockRecorder is the mock recorder for MockRuntimeImpl
+// MockRuntimeImplMockRecorder is the mock recorder for MockRuntimeImpl.
 type MockRuntimeImplMockRecorder struct {
 	mock *MockRuntimeImpl
 }
 
-// NewMockRuntimeImpl creates a new mock instance
+// NewMockRuntimeImpl creates a new mock instance.
 func NewMockRuntimeImpl(ctrl *gomock.Controller) *MockRuntimeImpl {
 	mock := &MockRuntimeImpl{ctrl: ctrl}
 	mock.recorder = &MockRuntimeImplMockRecorder{mock}
 	return mock
 }
 
-// EXPECT returns an object that allows the caller to indicate expected use
+// EXPECT returns an object that allows the caller to indicate expected use.
 func (m *MockRuntimeImpl) EXPECT() *MockRuntimeImplMockRecorder {
 	return m.recorder
 }
 
-// AttachContainer mocks base method
-func (m *MockRuntimeImpl) AttachContainer(arg0 *oci.Container, arg1 io.Reader, arg2, arg3 io.WriteCloser, arg4 bool, arg5 <-chan remotecommand.TerminalSize) error {
+// AttachContainer mocks base method.
+func (m *MockRuntimeImpl) AttachContainer(arg0 context.Context, arg1 *oci.Container, arg2 io.Reader, arg3, arg4 io.WriteCloser, arg5 bool, arg6 <-chan remotecommand.TerminalSize) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "AttachContainer", arg0, arg1, arg2, arg3, arg4, arg5)
+	ret := m.ctrl.Call(m, "AttachContainer", arg0, arg1, arg2, arg3, arg4, arg5, arg6)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// AttachContainer indicates an expected call of AttachContainer
-func (mr *MockRuntimeImplMockRecorder) AttachContainer(arg0, arg1, arg2, arg3, arg4, arg5 interface{}) *gomock.Call {
+// AttachContainer indicates an expected call of AttachContainer.
+func (mr *MockRuntimeImplMockRecorder) AttachContainer(arg0, arg1, arg2, arg3, arg4, arg5, arg6 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).AttachContainer), arg0, arg1, arg2, arg3, arg4, arg5)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AttachContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).AttachContainer), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
 }
+
 
 // CheckpointContainer mocks base method
 func (m *MockRuntimeImpl) CheckpointContainer(arg0 *oci.Container, arg1 *specs.Spec, arg2 bool) error {
@@ -66,93 +68,93 @@ func (mr *MockRuntimeImplMockRecorder) CheckpointContainer(arg0, arg1, arg2 inte
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CheckpointContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).CheckpointContainer), arg0, arg1, arg2)
 }
 
-// ContainerStats mocks base method
-func (m *MockRuntimeImpl) ContainerStats(arg0 *oci.Container, arg1 string) (*oci.ContainerStats, error) {
+// ContainerStats mocks base method.
+func (m *MockRuntimeImpl) ContainerStats(arg0 context.Context, arg1 *oci.Container, arg2 string) (*oci.ContainerStats, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ContainerStats", arg0, arg1)
+	ret := m.ctrl.Call(m, "ContainerStats", arg0, arg1, arg2)
 	ret0, _ := ret[0].(*oci.ContainerStats)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// ContainerStats indicates an expected call of ContainerStats
-func (mr *MockRuntimeImplMockRecorder) ContainerStats(arg0, arg1 interface{}) *gomock.Call {
+// ContainerStats indicates an expected call of ContainerStats.
+func (mr *MockRuntimeImplMockRecorder) ContainerStats(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerStats", reflect.TypeOf((*MockRuntimeImpl)(nil).ContainerStats), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ContainerStats", reflect.TypeOf((*MockRuntimeImpl)(nil).ContainerStats), arg0, arg1, arg2)
 }
 
-// CreateContainer mocks base method
-func (m *MockRuntimeImpl) CreateContainer(arg0 *oci.Container, arg1 string, arg2 bool) error {
+// CreateContainer mocks base method.
+func (m *MockRuntimeImpl) CreateContainer(arg0 context.Context, arg1 *oci.Container, arg2 string) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "CreateContainer", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// CreateContainer indicates an expected call of CreateContainer
+// CreateContainer indicates an expected call of CreateContainer.
 func (mr *MockRuntimeImplMockRecorder) CreateContainer(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "CreateContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).CreateContainer), arg0, arg1, arg2)
 }
 
-// DeleteContainer mocks base method
-func (m *MockRuntimeImpl) DeleteContainer(arg0 *oci.Container) error {
+// DeleteContainer mocks base method.
+func (m *MockRuntimeImpl) DeleteContainer(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteContainer", arg0)
+	ret := m.ctrl.Call(m, "DeleteContainer", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// DeleteContainer indicates an expected call of DeleteContainer
-func (mr *MockRuntimeImplMockRecorder) DeleteContainer(arg0 interface{}) *gomock.Call {
+// DeleteContainer indicates an expected call of DeleteContainer.
+func (mr *MockRuntimeImplMockRecorder) DeleteContainer(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).DeleteContainer), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).DeleteContainer), arg0, arg1)
 }
 
-// ExecContainer mocks base method
-func (m *MockRuntimeImpl) ExecContainer(arg0 *oci.Container, arg1 []string, arg2 io.Reader, arg3, arg4 io.WriteCloser, arg5 bool, arg6 <-chan remotecommand.TerminalSize) error {
+// ExecContainer mocks base method.
+func (m *MockRuntimeImpl) ExecContainer(arg0 context.Context, arg1 *oci.Container, arg2 []string, arg3 io.Reader, arg4, arg5 io.WriteCloser, arg6 bool, arg7 <-chan remotecommand.TerminalSize) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ExecContainer", arg0, arg1, arg2, arg3, arg4, arg5, arg6)
+	ret := m.ctrl.Call(m, "ExecContainer", arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// ExecContainer indicates an expected call of ExecContainer
-func (mr *MockRuntimeImplMockRecorder) ExecContainer(arg0, arg1, arg2, arg3, arg4, arg5, arg6 interface{}) *gomock.Call {
+// ExecContainer indicates an expected call of ExecContainer.
+func (mr *MockRuntimeImplMockRecorder) ExecContainer(arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExecContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).ExecContainer), arg0, arg1, arg2, arg3, arg4, arg5, arg6)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExecContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).ExecContainer), arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7)
 }
 
-// ExecSyncContainer mocks base method
-func (m *MockRuntimeImpl) ExecSyncContainer(arg0 *oci.Container, arg1 []string, arg2 int64) (*oci.ExecSyncResponse, error) {
+// ExecSyncContainer mocks base method.
+func (m *MockRuntimeImpl) ExecSyncContainer(arg0 context.Context, arg1 *oci.Container, arg2 []string, arg3 int64) (*oci.ExecSyncResponse, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ExecSyncContainer", arg0, arg1, arg2)
+	ret := m.ctrl.Call(m, "ExecSyncContainer", arg0, arg1, arg2, arg3)
 	ret0, _ := ret[0].(*oci.ExecSyncResponse)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
-// ExecSyncContainer indicates an expected call of ExecSyncContainer
-func (mr *MockRuntimeImplMockRecorder) ExecSyncContainer(arg0, arg1, arg2 interface{}) *gomock.Call {
+// ExecSyncContainer indicates an expected call of ExecSyncContainer.
+func (mr *MockRuntimeImplMockRecorder) ExecSyncContainer(arg0, arg1, arg2, arg3 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExecSyncContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).ExecSyncContainer), arg0, arg1, arg2)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ExecSyncContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).ExecSyncContainer), arg0, arg1, arg2, arg3)
 }
 
-// PauseContainer mocks base method
-func (m *MockRuntimeImpl) PauseContainer(arg0 *oci.Container) error {
+// PauseContainer mocks base method.
+func (m *MockRuntimeImpl) PauseContainer(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "PauseContainer", arg0)
+	ret := m.ctrl.Call(m, "PauseContainer", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// PauseContainer indicates an expected call of PauseContainer
-func (mr *MockRuntimeImplMockRecorder) PauseContainer(arg0 interface{}) *gomock.Call {
+// PauseContainer indicates an expected call of PauseContainer.
+func (mr *MockRuntimeImplMockRecorder) PauseContainer(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PauseContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).PauseContainer), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PauseContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).PauseContainer), arg0, arg1)
 }
 
-// PortForwardContainer mocks base method
+// PortForwardContainer mocks base method.
 func (m *MockRuntimeImpl) PortForwardContainer(arg0 context.Context, arg1 *oci.Container, arg2 string, arg3 int32, arg4 io.ReadWriteCloser) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PortForwardContainer", arg0, arg1, arg2, arg3, arg4)
@@ -160,24 +162,24 @@ func (m *MockRuntimeImpl) PortForwardContainer(arg0 context.Context, arg1 *oci.C
 	return ret0
 }
 
-// PortForwardContainer indicates an expected call of PortForwardContainer
+// PortForwardContainer indicates an expected call of PortForwardContainer.
 func (mr *MockRuntimeImplMockRecorder) PortForwardContainer(arg0, arg1, arg2, arg3, arg4 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PortForwardContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).PortForwardContainer), arg0, arg1, arg2, arg3, arg4)
 }
 
-// ReopenContainerLog mocks base method
-func (m *MockRuntimeImpl) ReopenContainerLog(arg0 *oci.Container) error {
+// ReopenContainerLog mocks base method.
+func (m *MockRuntimeImpl) ReopenContainerLog(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ReopenContainerLog", arg0)
+	ret := m.ctrl.Call(m, "ReopenContainerLog", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// ReopenContainerLog indicates an expected call of ReopenContainerLog
-func (mr *MockRuntimeImplMockRecorder) ReopenContainerLog(arg0 interface{}) *gomock.Call {
+// ReopenContainerLog indicates an expected call of ReopenContainerLog.
+func (mr *MockRuntimeImplMockRecorder) ReopenContainerLog(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReopenContainerLog", reflect.TypeOf((*MockRuntimeImpl)(nil).ReopenContainerLog), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ReopenContainerLog", reflect.TypeOf((*MockRuntimeImpl)(nil).ReopenContainerLog), arg0, arg1)
 }
 
 // RestoreContainer mocks base method
@@ -194,35 +196,36 @@ func (mr *MockRuntimeImplMockRecorder) RestoreContainer(arg0, arg1, arg2, arg3 i
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RestoreContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).RestoreContainer), arg0, arg1, arg2, arg3)
 }
 
-// SignalContainer mocks base method
-func (m *MockRuntimeImpl) SignalContainer(arg0 *oci.Container, arg1 syscall.Signal) error {
+// SignalContainer mocks base method.
+func (m *MockRuntimeImpl) SignalContainer(arg0 context.Context, arg1 *oci.Container, arg2 syscall.Signal) error {
+
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SignalContainer", arg0, arg1)
+	ret := m.ctrl.Call(m, "SignalContainer", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// SignalContainer indicates an expected call of SignalContainer
-func (mr *MockRuntimeImplMockRecorder) SignalContainer(arg0, arg1 interface{}) *gomock.Call {
+// SignalContainer indicates an expected call of SignalContainer.
+func (mr *MockRuntimeImplMockRecorder) SignalContainer(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SignalContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).SignalContainer), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SignalContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).SignalContainer), arg0, arg1, arg2)
 }
 
-// StartContainer mocks base method
-func (m *MockRuntimeImpl) StartContainer(arg0 *oci.Container) error {
+// StartContainer mocks base method.
+func (m *MockRuntimeImpl) StartContainer(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "StartContainer", arg0)
+	ret := m.ctrl.Call(m, "StartContainer", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// StartContainer indicates an expected call of StartContainer
-func (mr *MockRuntimeImplMockRecorder) StartContainer(arg0 interface{}) *gomock.Call {
+// StartContainer indicates an expected call of StartContainer.
+func (mr *MockRuntimeImplMockRecorder) StartContainer(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).StartContainer), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StartContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).StartContainer), arg0, arg1)
 }
 
-// StopContainer mocks base method
+// StopContainer mocks base method.
 func (m *MockRuntimeImpl) StopContainer(arg0 context.Context, arg1 *oci.Container, arg2 int64) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "StopContainer", arg0, arg1, arg2)
@@ -230,55 +233,55 @@ func (m *MockRuntimeImpl) StopContainer(arg0 context.Context, arg1 *oci.Containe
 	return ret0
 }
 
-// StopContainer indicates an expected call of StopContainer
+// StopContainer indicates an expected call of StopContainer.
 func (mr *MockRuntimeImplMockRecorder) StopContainer(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "StopContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).StopContainer), arg0, arg1, arg2)
 }
 
-// UnpauseContainer mocks base method
-func (m *MockRuntimeImpl) UnpauseContainer(arg0 *oci.Container) error {
+// UnpauseContainer mocks base method.
+func (m *MockRuntimeImpl) UnpauseContainer(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UnpauseContainer", arg0)
+	ret := m.ctrl.Call(m, "UnpauseContainer", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UnpauseContainer indicates an expected call of UnpauseContainer
-func (mr *MockRuntimeImplMockRecorder) UnpauseContainer(arg0 interface{}) *gomock.Call {
+// UnpauseContainer indicates an expected call of UnpauseContainer.
+func (mr *MockRuntimeImplMockRecorder) UnpauseContainer(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnpauseContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).UnpauseContainer), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnpauseContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).UnpauseContainer), arg0, arg1)
 }
 
-// UpdateContainer mocks base method
-func (m *MockRuntimeImpl) UpdateContainer(arg0 *oci.Container, arg1 *specs.LinuxResources) error {
+// UpdateContainer mocks base method.
+func (m *MockRuntimeImpl) UpdateContainer(arg0 context.Context, arg1 *oci.Container, arg2 *specs.LinuxResources) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateContainer", arg0, arg1)
+	ret := m.ctrl.Call(m, "UpdateContainer", arg0, arg1, arg2)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UpdateContainer indicates an expected call of UpdateContainer
-func (mr *MockRuntimeImplMockRecorder) UpdateContainer(arg0, arg1 interface{}) *gomock.Call {
+// UpdateContainer indicates an expected call of UpdateContainer.
+func (mr *MockRuntimeImplMockRecorder) UpdateContainer(arg0, arg1, arg2 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).UpdateContainer), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateContainer", reflect.TypeOf((*MockRuntimeImpl)(nil).UpdateContainer), arg0, arg1, arg2)
 }
 
-// UpdateContainerStatus mocks base method
-func (m *MockRuntimeImpl) UpdateContainerStatus(arg0 *oci.Container) error {
+// UpdateContainerStatus mocks base method.
+func (m *MockRuntimeImpl) UpdateContainerStatus(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpdateContainerStatus", arg0)
+	ret := m.ctrl.Call(m, "UpdateContainerStatus", arg0, arg1)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UpdateContainerStatus indicates an expected call of UpdateContainerStatus
-func (mr *MockRuntimeImplMockRecorder) UpdateContainerStatus(arg0 interface{}) *gomock.Call {
+// UpdateContainerStatus indicates an expected call of UpdateContainerStatus.
+func (mr *MockRuntimeImplMockRecorder) UpdateContainerStatus(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateContainerStatus", reflect.TypeOf((*MockRuntimeImpl)(nil).UpdateContainerStatus), arg0)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateContainerStatus", reflect.TypeOf((*MockRuntimeImpl)(nil).UpdateContainerStatus), arg0, arg1)
 }
 
-// WaitContainerStateStopped mocks base method
+// WaitContainerStateStopped mocks base method.
 func (m *MockRuntimeImpl) WaitContainerStateStopped(arg0 context.Context, arg1 *oci.Container) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "WaitContainerStateStopped", arg0, arg1)
@@ -286,7 +289,7 @@ func (m *MockRuntimeImpl) WaitContainerStateStopped(arg0 context.Context, arg1 *
 	return ret0
 }
 
-// WaitContainerStateStopped indicates an expected call of WaitContainerStateStopped
+// WaitContainerStateStopped indicates an expected call of WaitContainerStateStopped.
 func (mr *MockRuntimeImplMockRecorder) WaitContainerStateStopped(arg0, arg1 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "WaitContainerStateStopped", reflect.TypeOf((*MockRuntimeImpl)(nil).WaitContainerStateStopped), arg0, arg1)

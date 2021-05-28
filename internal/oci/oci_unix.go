@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/containers/libpod/v2/pkg/cgroups"
+	"github.com/containers/podman/v3/pkg/cgroups"
 	"github.com/containers/storage/pkg/pools"
 	"github.com/creack/pty"
 	"github.com/sirupsen/logrus"
@@ -17,7 +17,7 @@ import (
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 )
 
-func kill(pid int) error {
+func Kill(pid int) error {
 	err := unix.Kill(pid, unix.SIGKILL)
 	if err != nil && err != unix.ESRCH {
 		return fmt.Errorf("failed to kill process: %v", err)

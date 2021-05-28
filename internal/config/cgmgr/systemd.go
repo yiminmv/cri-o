@@ -82,7 +82,7 @@ func (*SystemdManager) MoveConmonToCgroup(cid, cgroupParent, conmonCgroup string
 		Value: dbus.MakeVariant(int(unix.SIGPIPE)),
 	}
 	logrus.Debugf("Running conmon under slice %s and unitName %s", cgroupParent, conmonUnitName)
-	if err := utils.RunUnderSystemdScope(pid, cgroupParent, conmonUnitName, killSignalProp); err != nil {
+	if err := utils.RunUnderSystemdScope(pid, cgroupParent, conmonUnitName, killSignalProp, systemdDbus.PropAfter("crio.service")); err != nil {
 		return "", errors.Wrapf(err, "failed to add conmon to systemd sandbox cgroup")
 	}
 	// return empty string as path because cgroup cleanup is done by systemd
@@ -124,4 +124,9 @@ func convertCgroupFsNameToSystemd(cgroupfsName string) string {
 	// above and beyond the simple assumption here that the base of the path encodes the hierarchy
 	// per systemd convention.
 	return path.Base(cgroupfsName)
+}
+
+// CreateSandboxCgroup calls the helper function createSandboxCgroup for this manager.
+func (m *SystemdManager) CreateSandboxCgroup(sbParent, containerID string) error {
+	return createSandboxCgroup(sbParent, containerID, m)
 }

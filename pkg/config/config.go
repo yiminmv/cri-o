@@ -8,14 +8,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
 	conmonconfig "github.com/containers/conmon/runner/config"
 	"github.com/containers/image/v5/pkg/sysregistriesv2"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/libpod/v2/pkg/hooks"
-	"github.com/containers/libpod/v2/pkg/rootless"
+	"github.com/containers/podman/v3/pkg/hooks"
+	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/storage"
 	"github.com/cri-o/cri-o/internal/config/apparmor"
 	"github.com/cri-o/cri-o/internal/config/capabilities"
@@ -39,14 +40,15 @@ import (
 
 // Defaults if none are specified
 const (
-	defaultRuntime        = "runc"
-	DefaultRuntimeType    = "oci"
-	DefaultRuntimeRoot    = "/run/runc"
-	defaultGRPCMaxMsgSize = 16 * 1024 * 1024
-	OCIBufSize            = 8192
-	RuntimeTypeVM         = "vm"
-	defaultCtrStopTimeout = 30 // seconds
-	defaultNamespacesDir  = "/var/run"
+	defaultRuntime             = "runc"
+	DefaultRuntimeType         = "oci"
+	DefaultRuntimeRoot         = "/run/runc"
+	defaultGRPCMaxMsgSize      = 16 * 1024 * 1024
+	OCIBufSize                 = 8192
+	RuntimeTypeVM              = "vm"
+	defaultCtrStopTimeout      = 30 // seconds
+	defaultNamespacesDir       = "/var/run"
+	RuntimeTypeVMBinaryPattern = "containerd-shim-([a-zA-Z0-9\\-\\+])+-v2"
 )
 
 // Config represents the entire set of configuration values that can be set for
@@ -95,6 +97,8 @@ const (
 	ImageVolumesIgnore ImageVolumesType = "ignore"
 	// ImageVolumesBind option is for using bind mounted volumes
 	ImageVolumesBind ImageVolumesType = "bind"
+	// DefaultPauseImage is default pause image
+	DefaultPauseImage string = "k8s.gcr.io/pause:3.5"
 )
 
 const (
@@ -105,10 +109,6 @@ const (
 	// DefaultLogSizeMax is the default value for the maximum log size
 	// allowed for a container. Negative values mean that no limit is imposed.
 	DefaultLogSizeMax = -1
-
-	// DefaultLogToJournald is the default value for whether conmon should
-	// log to journald in addition to kubernetes log file.
-	DefaultLogToJournald = false
 )
 
 const (
@@ -152,6 +152,10 @@ type RootConfig struct {
 	// CleanShutdownFile is the location CRI-O will lay down the clean shutdown file
 	// that checks whether we've had time to sync before shutting down
 	CleanShutdownFile string `toml:"clean_shutdown_file"`
+
+	// InternalWipe is whether CRI-O should wipe containers and images after a reboot when the server starts.
+	// If set to false, one must use the external command `crio wipe` to wipe the containers and images in these situations.
+	InternalWipe bool `toml:"internal_wipe"`
 }
 
 // RuntimeHandler represents each item of the "crio.runtime.runtimes" TOML
@@ -171,6 +175,9 @@ type RuntimeHandler struct {
 	// "io.kubernetes.cri-o.UnifiedCgroup.$CTR_NAME" for configuring the cgroup v2 unified block for a container.
 	// "io.containers.trace-syscall" for tracing syscalls via the OCI seccomp BPF hook.
 	AllowedAnnotations []string `toml:"allowed_annotations,omitempty"`
+
+	// DisallowedAnnotations is the slice of experimental annotations that are not allowed for this handler.
+	DisallowedAnnotations []string
 }
 
 // Multiple runtime Handlers in a map
@@ -309,6 +316,10 @@ type RuntimeConfig struct {
 	// the level of trust of the workload.
 	Runtimes Runtimes `toml:"runtimes"`
 
+	// Workloads defines a list of workloads types that are have grouped settings
+	// that will be applied to containers.
+	Workloads Workloads `toml:"workloads"`
+
 	// PidsLimit is the number of processes each container is restricted to
 	// by the cgroup process number controller.
 	PidsLimit int64 `toml:"pids_limit"`
@@ -328,6 +339,10 @@ type RuntimeConfig struct {
 
 	// InfraCtrCPUSet is the CPUs set that will be used to run infra containers
 	InfraCtrCPUSet string `toml:"infra_ctr_cpuset"`
+
+	// AbsentMountSourcesToReject is a list of paths that, when absent from the host,
+	// will cause a container creation to fail (as opposed to the current behavior of creating a directory).
+	AbsentMountSourcesToReject []string `toml:"absent_mount_sources_to_reject"`
 
 	// seccompConfig is the internal seccomp configuration
 	seccompConfig *seccomp.Config
@@ -492,10 +507,25 @@ func (t *tomlConfig) fromConfig(c *Config) {
 	t.Crio.Metrics.MetricsConfig = c.MetricsConfig
 }
 
-// UpdateFromFile populates the Config from the TOML-encoded file at the given path.
+// UpdateFromFile populates the Config from the TOML-encoded file at the given
+// path and "remembers" that we should reload this file's contents when we
+// receive a SIGHUP.
 // Returns errors encountered when reading or parsing the files, or nil
 // otherwise.
 func (c *Config) UpdateFromFile(path string) error {
+	if err := c.UpdateFromDropInFile(path); err != nil {
+		return err
+	}
+	c.singleConfigPath = path
+	return nil
+}
+
+// UpdateFromDropInFile populates the Config from the TOML-encoded file at the
+// given path.  The file may be the main configuration file, or it can be one
+// of the drop-in files which are used to supplement it.
+// Returns errors encountered when reading or parsing the files, or nil
+// otherwise.
+func (c *Config) UpdateFromDropInFile(path string) error {
 	data, err := ioutil.ReadFile(path)
 	if err != nil {
 		return err
@@ -523,14 +553,13 @@ func (c *Config) UpdateFromFile(path string) error {
 	}
 
 	t.toConfig(c)
-	c.singleConfigPath = path
 	return nil
 }
 
 // UpdateFromPath recursively iterates the provided path and updates the
 // configuration for it
 func (c *Config) UpdateFromPath(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
 		return nil
 	}
 	if err := filepath.Walk(path,
@@ -541,7 +570,7 @@ func (c *Config) UpdateFromPath(path string) error {
 			if info.IsDir() {
 				return nil
 			}
-			return c.UpdateFromFile(p)
+			return c.UpdateFromDropInFile(p)
 		}); err != nil {
 		return err
 	}
@@ -643,7 +672,7 @@ func DefaultConfig() (*Config, error) {
 		},
 		ImageConfig: ImageConfig{
 			DefaultTransport: "docker://",
-			PauseImage:       "k8s.gcr.io/pause:3.2",
+			PauseImage:       DefaultPauseImage,
 			PauseCommand:     "/pause",
 			ImageVolumes:     ImageVolumesMkdir,
 		},
@@ -768,6 +797,10 @@ func (c *RootConfig) Validate(onExecution bool) error {
 	return nil
 }
 
+func (c *RootConfig) CleanShutdownSupportedFileName() string {
+	return c.CleanShutdownFile + ".supported"
+}
+
 // Validate is the main entry point for runtime configuration validation
 // The parameter `onExecution` specifies if the validation should include
 // execution checks. It returns an `error` on validation failure, otherwise
@@ -830,6 +863,10 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 		if _, err := cpuset.Parse(c.InfraCtrCPUSet); err != nil {
 			return errors.Wrap(err, "invalid infra_ctr_cpuset")
 		}
+	}
+
+	if err := c.Workloads.Validate(); err != nil {
+		return errors.Wrap(err, "workloads validation")
 	}
 
 	// check for validation on execution
@@ -919,12 +956,24 @@ func (c *RuntimeConfig) Validate(systemContext *types.SystemContext, onExecution
 
 // ValidateRuntimes checks every runtime if its members are valid
 func (c *RuntimeConfig) ValidateRuntimes() error {
+	var failedValidation []string
+
 	// Validate if runtime_path does exist for each runtime
 	for name, handler := range c.Runtimes {
 		if err := handler.Validate(name); err != nil {
-			return err
+			if c.DefaultRuntime == name {
+				return err
+			}
+
+			logrus.Warnf("'%s is being ignored due to: %q", name, err)
+			failedValidation = append(failedValidation, name)
 		}
 	}
+
+	for _, invalidHandlerName := range failedValidation {
+		delete(c.Runtimes, invalidHandlerName)
+	}
+
 	return nil
 }
 
@@ -1064,7 +1113,25 @@ func (r *RuntimeHandler) Validate(name string) error {
 	if err := r.ValidateRuntimePath(name); err != nil {
 		return err
 	}
+	if err := r.ValidateRuntimeAllowedAnnotations(); err != nil {
+		return err
+	}
 	return r.ValidateRuntimeType(name)
+}
+
+func (r *RuntimeHandler) ValidateRuntimeVMBinaryPattern() bool {
+	if r.RuntimeType != RuntimeTypeVM {
+		return true
+	}
+
+	binaryName := filepath.Base(r.RuntimePath)
+
+	matched, err := regexp.MatchString(RuntimeTypeVMBinaryPattern, binaryName)
+	if err != nil {
+		return false
+	}
+
+	return matched
 }
 
 // ValidateRuntimePath checks if the `RuntimePath` is either set or available
@@ -1078,15 +1145,19 @@ func (r *RuntimeHandler) ValidateRuntimePath(name string) error {
 		}
 		r.RuntimePath = executable
 		logrus.Debugf("using runtime executable from $PATH %q", executable)
-	} else if _, err := os.Stat(r.RuntimePath); os.IsNotExist(err) {
+	} else if _, err := os.Stat(r.RuntimePath); err != nil && os.IsNotExist(err) {
 		return fmt.Errorf("invalid runtime_path for runtime '%s': %q",
 			name, err)
 	}
+
+	ok := r.ValidateRuntimeVMBinaryPattern()
+	if !ok {
+		return fmt.Errorf("invalid runtime_path for runtime '%s': containerd binary naming pattern is not followed",
+			name)
+	}
+
 	logrus.Debugf(
 		"Found valid runtime %q for runtime_path %q", name, r.RuntimePath,
-	)
-	logrus.Debugf(
-		"Allowed annotations for runtime: %v", r.AllowedAnnotations,
 	)
 	return nil
 }
@@ -1100,12 +1171,32 @@ func (r *RuntimeHandler) ValidateRuntimeType(name string) error {
 	return nil
 }
 
-func (c *Config) SetLocations(singleConfigPath, dropInConfigDir string) {
-	c.singleConfigPath = singleConfigPath
-	c.dropInConfigDir = dropInConfigDir
+func (r *RuntimeHandler) ValidateRuntimeAllowedAnnotations() error {
+	disallowedAnnotations := make(map[string]struct{})
+	for _, ann := range annotations.AllAllowedAnnotations {
+		disallowedAnnotations[ann] = struct{}{}
+	}
+	for _, allowed := range r.AllowedAnnotations {
+		if _, ok := disallowedAnnotations[allowed]; !ok {
+			return errors.Errorf("invalid allowed_annotation: %s", allowed)
+		}
+		delete(disallowedAnnotations, allowed)
+	}
+	for ann := range disallowedAnnotations {
+		r.DisallowedAnnotations = append(r.DisallowedAnnotations, ann)
+	}
+	logrus.Debugf(
+		"Allowed annotations for runtime: %v", r.AllowedAnnotations,
+	)
+	return nil
 }
 
 // CNIPlugin returns the network configuration CNI plugin
 func (c *NetworkConfig) CNIPlugin() ocicni.CNIPlugin {
 	return c.cniPlugin
+}
+
+// SetSingleConfigPath set single config path for config
+func (c *Config) SetSingleConfigPath(singleConfigPath string) {
+	c.singleConfigPath = singleConfigPath
 }

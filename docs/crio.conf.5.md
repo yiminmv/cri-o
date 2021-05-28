@@ -54,6 +54,10 @@ CRI-O reads its storage defaults from the containers-storage.conf(5) file locate
   It is used to check if crio wipe should wipe images, which should
   only happen when CRI-O has been upgraded
 
+**internal_wipe**=false
+  Whether CRI-O should wipe containers after a reboot and images after an upgrade when the server starts.
+  If set to false, one must run `crio wipe` to wipe the containers and images in these situations.
+
 **clean_shutdown_file**="/var/lib/crio/clean.shutdown"
   Location for CRI-O to lay down the clean shutdown file.
   It is used to check whether crio had time to sync before shutting down.
@@ -252,6 +256,9 @@ the container runtime configuration.
 **criu_path**=""
   The path to find the criu binary, which is needed to checkpoint and restore containers or pods.
 
+**absent_mount_sources_to_reject**=[]
+  A list of paths that, when absent from the host, will cause a container creation to fail (as opposed to the current behavior of creating a directory).
+
 ### CRIO.RUNTIME.RUNTIMES TABLE
 The "crio.runtime.runtimes" table defines a list of OCI compatible runtimes.  The runtime to use is picked based on the runtime_handler provided by the CRI.  If no runtime_handler is provided, the runtime will be picked based on the level of trust of the workload.
 
@@ -286,7 +293,7 @@ CRI-O reads its configured registries defaults from the system wide containers-r
 **global_auth_file**=""
   The path to a file like /var/lib/kubelet/config.json holding credentials necessary for pulling images from secure registries.
 
-**pause_image**="k8s.gcr.io/pause:3.2"
+**pause_image**="k8s.gcr.io/pause:3.5"
   The image used to instantiate infra containers. This option supports live configuration reload.
 
 **pause_image_auth_file**=""

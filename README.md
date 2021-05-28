@@ -13,11 +13,24 @@
 
 ## Compatibility matrix: CRI-O ⬄ Kubernetes
 
-CRI-O and Kubernetes follow the same release cycle and deprecation policy. For more information visit the [Kubernetes versioning documentation](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/release/versioning.md).
+CRI-O follows the Kubernetes release cycles with respect to its minor versions
+(`1.x.0`). Patch releases (`1.x.y`) for CRI-O are not in sync with those from
+Kubernetes, because those are scheduled for each month, whereas CRI-O provides
+them only if necessary. If a Kubernetes release goes [End of
+Life](https://github.com/kubernetes/sig-release/blob/master/releases/patch-releases.md),
+then the corresponding CRI-O version can be considered in the same way.
+
+This means that CRI-O also follows the Kubernetes `n-2` release version skew
+policy when it comes to feature graduation, deprecation or removal. This also
+applies to features which are independent from Kubernetes.
+
+For more information visit the [Kubernetes versioning
+documentation](https://github.com/kubernetes/community/blob/master/contributors/design-proposals/release/versioning.md).
 
 | Version - Branch             | Kubernetes branch/version       | Maintenance status |
 |------------------------------|---------------------------------|--------------------|
 | CRI-O HEAD    - master       | Kubernetes master branch        | ✓                  |
+| CRI-O 1.21.x  - release-1.21 | Kubernetes 1.21 branch, v1.21.x | =                  |
 | CRI-O 1.20.x  - release-1.20 | Kubernetes 1.20 branch, v1.20.x | =                  |
 | CRI-O 1.19.x  - release-1.19 | Kubernetes 1.19 branch, v1.19.x | =                  |
 | CRI-O 1.18.x  - release-1.18 | Kubernetes 1.18 branch, v1.18.x | =                  |
@@ -65,7 +78,7 @@ It is currently in active development in the Kubernetes community through the [d
 | ---------------------------------------------------- | --------------------------------------------------------------------------|
 | [crio(8)](/docs/crio.8.md)                           | OCI Kubernetes Container Runtime daemon                                   |
 
-Note that kpod and its container management and debugging commands have moved to a separate repository, located [here](https://github.com/containers/libpod).
+Note that podman and its container management and debugging commands have moved to a separate repository, located [here](https://github.com/containers/podman).
 
 ## Configuration
 | File                                       | Description                                                                                          |
@@ -77,7 +90,7 @@ Note that kpod and its container management and debugging commands have moved to
 
 ## OCI Hooks Support
 
-[You can configure CRI-O][libpod-hooks] to inject [OCI Hooks][spec-hooks] when creating containers.
+[You can configure CRI-O][podman-hooks] to inject [OCI Hooks][spec-hooks] when creating containers.
 
 ## CRI-O Usage Transfer
 
@@ -153,7 +166,7 @@ CONTAINER_RUNTIME_ENDPOINT='unix:///var/run/crio/crio.sock' \
 
 For more guidance in running `CRI-O`, visit our [tutorial page](tutorial.md)
 
-[libpod-hooks]: https://github.com/containers/libpod/blob/v0.6.2/pkg/hooks/README.md
+[podman-hooks]: https://github.com/containers/podman/blob/v3.0.1/pkg/hooks/README.md
 [spec-hooks]: https://github.com/opencontainers/runtime-spec/blob/v1.0.1/config.md#posix-platform-hooks
 
 #### The HTTP status API
@@ -203,6 +216,11 @@ default UID mappings (format <container>:<host>:<size>):
 #### Metrics
 
 Please refer to the [CRI-O Metrics guide](tutorials/metrics.md).
+
+#### Container Runtime Interface special cases
+
+Some aspects of the Container Runtime are worth some additional explanation.
+These details are summarized in a [dedicated guide](cri.md).
 
 ## Adopters
 

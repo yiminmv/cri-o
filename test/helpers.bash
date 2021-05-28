@@ -30,23 +30,16 @@ CONMON_BINARY=${CONMON_BINARY:-$(command -v conmon)}
 # Cgroup for the conmon process
 CONTAINER_CONMON_CGROUP=${CONTAINER_CONMON_CGROUP:-pod}
 # Path of the default seccomp profile.
-CONTAINER_SECCOMP_PROFILE=${CONTAINER_SECCOMP_PROFILE:-${CRIO_ROOT}/vendor/github.com/seccomp/containers-golang/seccomp.json}
+CONTAINER_SECCOMP_PROFILE=${CONTAINER_SECCOMP_PROFILE:-${CRIO_ROOT}/vendor/github.com/containers/common/pkg/seccomp/seccomp.json}
 CONTAINER_UID_MAPPINGS=${CONTAINER_UID_MAPPINGS:-}
 CONTAINER_GID_MAPPINGS=${CONTAINER_GID_MAPPINGS:-}
 OVERRIDE_OPTIONS=${OVERRIDE_OPTIONS:-}
 # CNI path
 CONTAINER_CNI_PLUGIN_DIR=${CONTAINER_CNI_PLUGIN_DIR:-/opt/cni/bin}
 # Runtime
-CONTAINER_RUNTIME=${CONTAINER_RUNTIME:-runc}
 CONTAINER_DEFAULT_RUNTIME=${CONTAINER_DEFAULT_RUNTIME:-runc}
-RUNTIME_NAME=${RUNTIME_NAME:-runc}
-RUNTIME_PATH=$(command -v "$CONTAINER_RUNTIME" || true)
-RUNTIME_BINARY=${RUNTIME_PATH:-$(command -v runc)}
+RUNTIME_BINARY_PATH=$(command -v "$CONTAINER_DEFAULT_RUNTIME")
 RUNTIME_TYPE=${RUNTIME_TYPE:-oci}
-if [[ $CONTAINER_RUNTIME == "kata-runtime" ]]; then
-    export RUNTIME_NAME="$CONTAINER_RUNTIME"
-    export CONTAINER_DEFAULT_RUNTIME="$RUNTIME_NAME"
-fi
 # Path of the apparmor_parser binary.
 APPARMOR_PARSER_BINARY=${APPARMOR_PARSER_BINARY:-/sbin/apparmor_parser}
 # Path of the apparmor profile for test.
@@ -93,7 +86,7 @@ POD_IPV6_CIDR_START="1100:2"
 POD_IPV6_DEF_ROUTE="1100:200::1/24"
 
 IMAGES=(
-    k8s.gcr.io/pause:3.2
+    k8s.gcr.io/pause:3.5
     quay.io/crio/busybox:latest
     quay.io/crio/fedora-ping:latest
     quay.io/crio/image-volume-test:latest
@@ -162,6 +155,7 @@ function setup_test() {
     CRIO_CONFIG_DIR="$TESTDIR/crio.conf.d"
     mkdir "$CRIO_CONFIG_DIR"
     CRIO_CONFIG="$TESTDIR/crio.conf"
+    CRIO_CUSTOM_CONFIG="$CRIO_CONFIG_DIR/crio-custom.conf"
     CRIO_CNI_CONFIG="$TESTDIR/cni/net.d/"
     CRIO_LOG="$TESTDIR/crio.log"
 
@@ -198,6 +192,11 @@ function crio() {
 # Run crictl using the binary specified by $CRICTL_BINARY.
 function crictl() {
     "$CRICTL_BINARY" -r "unix://$CRIO_SOCKET" -i "unix://$CRIO_SOCKET" "$@"
+}
+
+# Run the runtime binary with the specified RUNTIME_ROOT
+function runtime() {
+    "$RUNTIME_BINARY_PATH" --root "$RUNTIME_ROOT" "$@"
 }
 
 # Communicate with Docker on the host machine.
@@ -265,12 +264,12 @@ function setup_crio() {
     CNI_DEFAULT_NETWORK=${CNI_DEFAULT_NETWORK:-crio}
     CNI_TYPE=${CNI_TYPE:-bridge}
 
-    # Workaround for https://github.com/containers/crun/pull/531.
-    # TODO: remove once crun > 0.15 is released and used here.
-    if $RUNTIME_BINARY --version | grep -q '^crun '; then
-        OVERRIDE_OPTIONS="$OVERRIDE_OPTIONS --selinux=false"
-    fi
-    RUNTIME_ROOT="$TESTDIR/crio-runtime-root"
+    RUNTIME_ROOT=${RUNTIME_ROOT:-"$TESTDIR/crio-runtime-root"}
+    # export here so direct calls to crio later inherit the variable
+    export CONTAINER_RUNTIMES=${CONTAINER_RUNTIMES:-$CONTAINER_DEFAULT_RUNTIME:$RUNTIME_BINARY_PATH:$RUNTIME_ROOT:$RUNTIME_TYPE}
+
+    # generate the default config file
+    "$CRIO_BINARY_PATH" config --default >"$CRIO_CONFIG"
 
     # shellcheck disable=SC2086
     "$CRIO_BINARY_PATH" \
@@ -281,7 +280,6 @@ function setup_crio() {
         --listen "$CRIO_SOCKET" \
         --registry "quay.io" \
         --registry "docker.io" \
-        --runtimes "$RUNTIME_NAME:$RUNTIME_BINARY:$RUNTIME_ROOT:$RUNTIME_TYPE" \
         -r "$TESTDIR/crio" \
         --runroot "$TESTDIR/crio-run" \
         --cni-default-network "$CNI_DEFAULT_NETWORK" \
@@ -292,12 +290,16 @@ function setup_crio() {
         -c "" \
         -d "" \
         $OVERRIDE_OPTIONS \
-        config >"$CRIO_CONFIG"
+        config >"$CRIO_CUSTOM_CONFIG"
     sed -r -e 's/^(#)?root =/root =/g' -e 's/^(#)?runroot =/runroot =/g' -e 's/^(#)?storage_driver =/storage_driver =/g' -e '/^(#)?storage_option = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?registries = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?default_ulimits = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -i "$CRIO_CONFIG"
+    sed -r -e 's/^(#)?root =/root =/g' -e 's/^(#)?runroot =/runroot =/g' -e 's/^(#)?storage_driver =/storage_driver =/g' -e '/^(#)?storage_option = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?registries = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -e '/^(#)?default_ulimits = (\[)?[ \t]*$/,/^#?$/s/^(#)?//g' -i "$CRIO_CUSTOM_CONFIG"
     # make sure we don't run with nodev, or else mounting a readonly rootfs will fail: https://github.com/cri-o/cri-o/issues/1929#issuecomment-474240498
     sed -r -e 's/nodev(,)?//g' -i "$CRIO_CONFIG"
+    sed -r -e 's/nodev(,)?//g' -i "$CRIO_CUSTOM_CONFIG"
     sed -i -e 's;\(container_exits_dir =\) \(.*\);\1 "'"$CONTAINER_EXITS_DIR"'";g' "$CRIO_CONFIG"
+    sed -i -e 's;\(container_exits_dir =\) \(.*\);\1 "'"$CONTAINER_EXITS_DIR"'";g' "$CRIO_CUSTOM_CONFIG"
     sed -i -e 's;\(container_attach_socket_dir =\) \(.*\);\1 "'"$CONTAINER_ATTACH_SOCKET_DIR"'";g' "$CRIO_CONFIG"
+    sed -i -e 's;\(container_attach_socket_dir =\) \(.*\);\1 "'"$CONTAINER_ATTACH_SOCKET_DIR"'";g' "$CRIO_CUSTOM_CONFIG"
     prepare_network_conf
 }
 
@@ -351,6 +353,11 @@ function check_journald() {
         journalctl --version
 }
 
+# get a random available port
+function free_port() {
+    python -c 'import socket; s=socket.socket(); s.bind(("", 0)); print(s.getsockname()[1]); s.close()'
+}
+
 # Check whether a port is listening
 function port_listens() {
     netstat -ln46 | grep -q ":$1\b"
@@ -370,8 +377,9 @@ function cleanup_pods() {
 }
 
 function stop_crio_no_clean() {
+    local signal="$1"
     if [ -n "${CRIO_PID+x}" ]; then
-        kill "$CRIO_PID" >/dev/null 2>&1
+        kill "$signal" "$CRIO_PID" >/dev/null 2>&1 || true
         wait "$CRIO_PID"
         unset CRIO_PID
     fi
@@ -379,7 +387,7 @@ function stop_crio_no_clean() {
 
 # Stop crio.
 function stop_crio() {
-    stop_crio_no_clean
+    stop_crio_no_clean ""
     cleanup_network_conf
 }
 
@@ -531,6 +539,7 @@ function wait_for_log() {
 
 function replace_config() {
     sed -i -e 's;\('"$1"' = "\).*\("\);\1'"$2"'\2;' "$CRIO_CONFIG"
+    sed -i -e 's;\('"$1"' = "\).*\("\);\1'"$2"'\2;' "$CRIO_CUSTOM_CONFIG"
 }
 
 # Fails the current test, providing the error given.

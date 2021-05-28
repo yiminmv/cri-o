@@ -13,8 +13,8 @@ import (
 
 	"github.com/containers/buildah/pkg/secrets"
 	"github.com/containers/buildah/util"
-	"github.com/containers/libpod/v2/pkg/rootless"
-	selinux "github.com/containers/libpod/v2/pkg/selinux"
+	"github.com/containers/podman/v3/pkg/rootless"
+	selinux "github.com/containers/podman/v3/pkg/selinux"
 	cstorage "github.com/containers/storage"
 	"github.com/containers/storage/pkg/idtools"
 	"github.com/containers/storage/pkg/mount"
@@ -36,7 +36,7 @@ import (
 )
 
 // createContainerPlatform performs platform dependent intermediate steps before calling the container's oci.Runtime().CreateContainer()
-func (s *Server) createContainerPlatform(container *oci.Container, cgroupParent string, idMappings *idtools.IDMappings) error {
+func (s *Server) createContainerPlatform(ctx context.Context, container *oci.Container, cgroupParent string, idMappings *idtools.IDMappings) error {
 	if idMappings != nil && !container.Spoofed() {
 		rootPair := idMappings.RootPair()
 		for _, path := range []string{container.BundlePath(), container.MountPoint()} {
@@ -48,7 +48,7 @@ func (s *Server) createContainerPlatform(container *oci.Container, cgroupParent 
 			return err
 		}
 	}
-	return s.Runtime().CreateContainer(container, cgroupParent, false)
+	return s.Runtime().CreateContainer(ctx, container, cgroupParent)
 }
 
 // makeAccessible changes the path permission and each parent directory to have --x--x--x
@@ -270,7 +270,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 		processLabel = ""
 	}
 
-	containerVolumes, ociMounts, err := addOCIBindMounts(ctx, mountLabel, containerConfig, specgen, s.config.RuntimeConfig.BindMountPrefix)
+	containerVolumes, ociMounts, err := addOCIBindMounts(ctx, mountLabel, containerConfig, specgen, s.config.RuntimeConfig.BindMountPrefix, s.config.AbsentMountSourcesToReject)
 	if err != nil {
 		return nil, err
 	}
@@ -282,17 +282,9 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 		return nil, err
 	}
 
-	allowDeviceAnnotations, err := s.Runtime().AllowDevicesAnnotation(sb.RuntimeHandler())
+	annotationDevices, err := device.DevicesFromAnnotation(sb.Annotations()[crioann.DevicesAnnotation])
 	if err != nil {
 		return nil, err
-	}
-
-	annotationDevices := []device.Device{}
-	if allowDeviceAnnotations {
-		annotationDevices, err = device.DevicesFromAnnotation(sb.Annotations()[crioann.DevicesAnnotation])
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	if err := ctr.SpecAddDevices(configuredDevices, annotationDevices, privilegedWithoutHostDevices); err != nil {
@@ -373,8 +365,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 			}
 			// Clear default capabilities from spec
 			specgen.ClearProcessCapabilities()
-			capabilities.AddCapabilities = append(capabilities.AddCapabilities, s.config.DefaultCapabilities...)
-			err = setupCapabilities(specgen, capabilities)
+			err = setupCapabilities(specgen, capabilities, s.config.DefaultCapabilities)
 			if err != nil {
 				return nil, err
 			}
@@ -422,18 +413,12 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 		}
 	}
 
-	allowUnifiedResources, err := s.Runtime().AllowUnifiedCgroupAnnotation(sb.RuntimeHandler())
-	if err != nil {
+	if err := ctr.AddUnifiedResourcesFromAnnotations(sb.Annotations()); err != nil {
 		return nil, err
-	}
-	if allowUnifiedResources {
-		if err := ctr.AddUnifiedResourcesFromAnnotations(sb.Annotations()); err != nil {
-			return nil, err
-		}
 	}
 
 	// Join the namespace paths for the pod sandbox container.
-	if err := configureGeneratorGivenNamespacePaths(sb.NamespacePaths(), *specgen); err != nil {
+	if err := configureGeneratorGivenNamespacePaths(sb.NamespacePaths(), specgen); err != nil {
 		return nil, errors.Wrap(err, "failed to configure namespaces in container create")
 	}
 
@@ -491,13 +476,11 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 		return nil, err
 	}
 
-	processArgs, err := buildOCIProcessArgs(ctx, containerConfig, containerImageConfig)
-	if err != nil {
+	if err := ctr.SpecSetProcessArgs(containerImageConfig); err != nil {
 		return nil, err
 	}
-	specgen.SetProcessArgs(processArgs)
 
-	if strings.Contains(processArgs[0], "/sbin/init") || (filepath.Base(processArgs[0]) == "systemd") {
+	if ctr.WillRunSystemd() {
 		processLabel, err = selinux.InitLabel(processLabel)
 		if err != nil {
 			return nil, err
@@ -566,10 +549,14 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 	specgen.AddProcessEnv("HOSTNAME", sb.Hostname())
 
 	created := time.Now()
-	spp := containerConfig.Linux.SecurityContext.SeccompProfilePath
 	if !ctr.Privileged() {
-		if err := s.setupSeccomp(ctx, specgen, spp); err != nil {
-			return nil, err
+		if err := s.Config().Seccomp().Setup(
+			ctx,
+			specgen,
+			securityContext.Seccomp,
+			containerConfig.Linux.SecurityContext.SeccompProfilePath,
+		); err != nil {
+			return nil, errors.Wrap(err, "setup seccomp")
 		}
 	}
 
@@ -586,8 +573,19 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 			}
 		}
 	}()
-	err = ctr.SpecAddAnnotations(sb, containerVolumes, mountPoint, containerImageConfig.Config.StopSignal, imgResult, s.config.CgroupManager().IsSystemd(), node.SystemdHasCollectMode())
+
+	// TODO: eventually, this should be in the container package, but it's going through a lot of churn
+	// and SpecAddAnnotations is already passed too many arguments
+	if err := s.Runtime().FilterDisallowedAnnotations(sb.RuntimeHandler(), ctr.Config().Annotations); err != nil {
+		return nil, err
+	}
+
+	err = ctr.SpecAddAnnotations(ctx, sb, containerVolumes, mountPoint, containerImageConfig.Config.StopSignal, imgResult, s.config.CgroupManager().IsSystemd(), node.SystemdHasCollectMode())
 	if err != nil {
+		return nil, err
+	}
+
+	if err := s.config.Workloads.MutateSpecGivenAnnotations(ctr.Config().Metadata.Name, ctr.Spec(), sb.Annotations()); err != nil {
 		return nil, err
 	}
 
@@ -728,7 +726,7 @@ func (s *Server) createSandboxContainer(ctx context.Context, ctr ctrIface.Contai
 
 	ociContainer.SetSpec(specgen.Config)
 	ociContainer.SetMountPoint(mountPoint)
-	ociContainer.SetSeccompProfilePath(spp)
+	ociContainer.SetSeccompProfilePath(containerConfig.Linux.SecurityContext.SeccompProfilePath)
 
 	for _, cv := range containerVolumes {
 		ociContainer.AddVolume(cv)
@@ -776,7 +774,7 @@ func clearReadOnly(m *rspec.Mount) {
 	m.Options = append(m.Options, "rw")
 }
 
-func addOCIBindMounts(ctx context.Context, mountLabel string, containerConfig *types.ContainerConfig, specgen *generate.Generator, bindMountPrefix string) ([]oci.ContainerVolume, []rspec.Mount, error) {
+func addOCIBindMounts(ctx context.Context, mountLabel string, containerConfig *types.ContainerConfig, specgen *generate.Generator, bindMountPrefix string, absentMountSourcesToReject []string) ([]oci.ContainerVolume, []rspec.Mount, error) {
 	volumes := []oci.ContainerVolume{}
 	ociMounts := []rspec.Mount{}
 	mounts := containerConfig.Mounts
@@ -832,7 +830,15 @@ func addOCIBindMounts(ctx context.Context, mountLabel string, containerConfig *t
 		} else {
 			if !os.IsNotExist(err) {
 				return nil, nil, fmt.Errorf("failed to resolve symlink %q: %v", src, err)
-			} else if err = os.MkdirAll(src, 0o755); err != nil {
+			}
+			for _, toReject := range absentMountSourcesToReject {
+				if filepath.Clean(src) == toReject {
+					// special-case /etc/hostname, as we don't want it to be created as a directory
+					// This can cause issues with node reboot.
+					return nil, nil, errors.Errorf("Cannot mount %s: path does not exist and will cause issues as a directory", toReject)
+				}
+			}
+			if err = os.MkdirAll(src, 0o755); err != nil {
 				return nil, nil, fmt.Errorf("failed to mkdir %s: %s", src, err)
 			}
 		}

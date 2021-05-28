@@ -324,6 +324,8 @@ type LinuxSandboxSecurityContext struct {
 	SelinuxOptions     *SELinuxOption
 	RunAsUser          *Int64Value
 	RunAsGroup         *Int64Value
+	Seccomp            *SecurityProfile
+	Apparmor           *SecurityProfile
 	SeccompProfilePath string
 	SupplementalGroups []int64
 	ReadonlyRootfs     bool
@@ -511,6 +513,8 @@ type LinuxContainerSecurityContext struct {
 	SelinuxOptions     *SELinuxOption
 	RunAsUser          *Int64Value
 	RunAsGroup         *Int64Value
+	Seccomp            *SecurityProfile
+	Apparmor           *SecurityProfile
 	RunAsUsername      string
 	ApparmorProfile    string
 	SeccompProfilePath string
@@ -621,6 +625,7 @@ type ContainerStatsFilter struct {
 	LabelSelector map[string]string
 }
 
+
 type CheckpointRestoreOptions struct {
 	Keep           bool
 	TCPEstablished bool
@@ -656,3 +661,16 @@ type RestoreContainerResponse struct {
 	Pod                bool
 	RestoredContainers []string
 }
+
+type SecurityProfile struct {
+	ProfileType  SecurityProfileType
+	LocalhostRef string
+}
+
+type SecurityProfileType int32
+
+const (
+	SecurityProfileTypeRuntimeDefault SecurityProfileType = 0
+	SecurityProfileTypeUnconfined     SecurityProfileType = 1
+	SecurityProfileTypeLocalhost      SecurityProfileType = 2
+)

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/containers/libpod/v2/pkg/annotations"
+	"github.com/containers/podman/v3/pkg/annotations"
 	"github.com/containers/storage/pkg/stringid"
 	"github.com/cri-o/cri-o/internal/config/device"
 	"github.com/cri-o/cri-o/internal/lib"
@@ -21,6 +21,7 @@ import (
 	crioann "github.com/cri-o/cri-o/pkg/annotations"
 	"github.com/cri-o/cri-o/server/cri/types"
 	"github.com/cri-o/cri-o/utils"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/opencontainers/selinux/go-selinux/label"
@@ -98,18 +99,25 @@ type Container interface {
 	SpecAddMount(rspec.Mount)
 
 	// SpecAddAnnotations adds annotations to the spec.
-	SpecAddAnnotations(sandbox *sandbox.Sandbox, containerVolume []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool) error
+	SpecAddAnnotations(ctx context.Context, sandbox *sandbox.Sandbox, containerVolume []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool) error
 
 	// SpecAddDevices adds devices from the server config, and container CRI config
 	SpecAddDevices([]device.Device, []device.Device, bool) error
 
 	// AddUnifiedResourcesFromAnnotations adds the cgroup-v2 resources specified in the io.kubernetes.cri-o.UnifiedCgroup annotation
 	AddUnifiedResourcesFromAnnotations(annotationsMap map[string]string) error
+
+	// SpecSetProcessArgs sets the process args in the spec,
+	// given the image information and passed-in container config
+	SpecSetProcessArgs(imageOCIConfig *v1.Image) error
+
+	// WillRunSystemd checks whether the process args
+	// are configured to be run as a systemd instance.
+	WillRunSystemd() bool
 }
 
 // container is the hidden default type behind the Container interface
 type container struct {
-	ctx        context.Context
 	config     *types.ContainerConfig
 	sboxConfig *types.PodSandboxConfig
 	id         string
@@ -120,13 +128,12 @@ type container struct {
 }
 
 // New creates a new, empty Sandbox instance
-func New(ctx context.Context) (Container, error) {
+func New() (Container, error) {
 	spec, err := generate.New("linux")
 	if err != nil {
 		return nil, err
 	}
 	return &container{
-		ctx:  ctx,
 		spec: spec,
 	}, nil
 }
@@ -138,7 +145,7 @@ func (c *container) SpecAddMount(r rspec.Mount) {
 }
 
 // SpecAddAnnotation adds all annotations to the spec
-func (c *container) SpecAddAnnotations(sb *sandbox.Sandbox, containerVolumes []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool) (err error) {
+func (c *container) SpecAddAnnotations(ctx context.Context, sb *sandbox.Sandbox, containerVolumes []oci.ContainerVolume, mountPoint, configStopSignal string, imageResult *storage.ImageResult, isSystemd, systemdHasCollectMode bool) (err error) {
 	// Copied from k8s.io/kubernetes/pkg/kubelet/kuberuntime/labels.go
 	const podTerminationGracePeriodLabel = "io.kubernetes.pod.terminationGracePeriod"
 
@@ -175,7 +182,7 @@ func (c *container) SpecAddAnnotations(sb *sandbox.Sandbox, containerVolumes []o
 			// to 'container'. This allows us to trace containers into
 			// distinguishable files.
 			if strings.TrimPrefix(k, crioann.OCISeccompBPFHookAnnotation+"/") == c.config.Metadata.Name {
-				log.Debugf(c.ctx,
+				log.Debugf(ctx,
 					"Annotation key for container %q rewritten to %q (value is: %q)",
 					c.config.Metadata.Name, crioann.OCISeccompBPFHookAnnotation, v,
 				)
@@ -249,6 +256,8 @@ func (c *container) SpecAddAnnotations(sb *sandbox.Sandbox, containerVolumes []o
 		if systemdHasCollectMode {
 			c.spec.AddAnnotation("org.systemd.property.CollectMode", "'inactive-or-failed'")
 		}
+		c.spec.AddAnnotation("org.systemd.property.DefaultDependencies", "true")
+		c.spec.AddAnnotation("org.systemd.property.After", "['crio.service']")
 	}
 
 	if configStopSignal != "" {
@@ -533,4 +542,49 @@ func (c *container) AddUnifiedResourcesFromAnnotations(annotationsMap map[string
 	}
 
 	return nil
+}
+
+// SpecSetProcessArgs sets the process args in the spec,
+// given the image information and passed-in container config
+func (c *container) SpecSetProcessArgs(imageOCIConfig *v1.Image) error {
+	kubeCommands := c.config.Command
+	kubeArgs := c.config.Args
+
+	// merge image config and kube config
+	// same as docker does today...
+	if imageOCIConfig != nil {
+		if len(kubeCommands) == 0 {
+			if len(kubeArgs) == 0 {
+				kubeArgs = imageOCIConfig.Config.Cmd
+			}
+			if kubeCommands == nil {
+				kubeCommands = imageOCIConfig.Config.Entrypoint
+			}
+		}
+	}
+
+	// create entrypoint and args
+	var entrypoint string
+	var args []string
+	switch {
+	case len(kubeCommands) != 0:
+		entrypoint = kubeCommands[0]
+		args = kubeCommands[1:]
+		args = append(args, kubeArgs...)
+	case len(kubeArgs) != 0:
+		entrypoint = kubeArgs[0]
+		args = kubeArgs[1:]
+	default:
+		return errors.New("no command specified")
+	}
+
+	c.spec.SetProcessArgs(append([]string{entrypoint}, args...))
+	return nil
+}
+
+// WillRunSystemd checks whether the process args
+// are configured to be run as a systemd instance.
+func (c *container) WillRunSystemd() bool {
+	entrypoint := c.spec.Config.Process.Args[0]
+	return strings.Contains(entrypoint, "/sbin/init") || (filepath.Base(entrypoint) == "systemd")
 }

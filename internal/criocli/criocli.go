@@ -66,6 +66,12 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 	if err := config.UpdateFromPath(ctx.String("config-dir")); err != nil {
 		return err
 	}
+	// If "config-dir" is specified, config.UpdateFromPath() will set config.singleConfigPath as
+	// the last config file in "config-dir".
+	// We need correct it to the path specified by "config"
+	if path != "" {
+		config.SetSingleConfigPath(path)
+	}
 
 	// Override options set with the CLI.
 	if ctx.IsSet("conmon") {
@@ -286,6 +292,12 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 	}
 	if ctx.IsSet("clean-shutdown-file") {
 		config.CleanShutdownFile = ctx.String("clean-shutdown-file")
+	}
+	if ctx.IsSet("absent-mount-sources-to-reject") {
+		config.AbsentMountSourcesToReject = StringSliceTrySplit(ctx, "absent-mount-sources-to-reject")
+	}
+	if ctx.IsSet("internal-wipe") {
+		config.InternalWipe = ctx.Bool("internal-wipe")
 	}
 	if ctx.IsSet("enable-metrics") {
 		config.EnableMetrics = ctx.Bool("enable-metrics")
@@ -812,6 +824,14 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			TakesFile:   true,
 		},
 		&cli.StringFlag{
+			Name:        "registries-conf-dir",
+			Usage:       "path to the registries.conf.d directory",
+			Destination: &defConf.SystemContext.SystemRegistriesConfDirPath,
+			Hidden:      true,
+			EnvVars:     []string{"CONTAINER_REGISTRIES_CONF_DIR"},
+			TakesFile:   true,
+		},
+		&cli.StringFlag{
 			Name:      "version-file",
 			Usage:     "Location for CRI-O to lay down the temporary version file. It is used to check if crio wipe should wipe containers, which should always happen on a node reboot",
 			Value:     defConf.VersionFile,
@@ -824,6 +844,12 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			Value:     defConf.VersionFile,
 			EnvVars:   []string{"CONTAINER_VERSION_FILE_PERSIST"},
 			TakesFile: true,
+		},
+		&cli.BoolFlag{
+			Name:    "internal-wipe",
+			Usage:   "Whether CRI-O should wipe containers after a reboot and images after an upgrade when the server starts. If set to false, one must run `crio wipe` to wipe the containers and images in these situations.",
+			Value:   defConf.InternalWipe,
+			EnvVars: []string{"CONTAINER_INTERNAL_WIPE"},
 		},
 		&cli.StringFlag{
 			Name:    "infra-ctr-cpuset",
@@ -841,6 +867,11 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			Name:    "criu-path",
 			Usage:   fmt.Sprintf("The path to find the criu binary, which is needed to checkpoint and restore containers. Will be searched for in $PATH if empty (default: %q)", defConf.CriuPath),
 			EnvVars: []string{"CONTAINER_CRIU_PATH"},
+		&cli.StringSliceFlag{
+			Name:    "absent-mount-sources-to-reject",
+			Value:   cli.NewStringSlice(defConf.AbsentMountSourcesToReject...),
+			Usage:   "A list of paths that, when absent from the host, will cause a container creation to fail (as opposed to the current behavior of creating a directory).",
+			EnvVars: []string{"CONTAINER_ABSENT_MOUNT_SOURCES_TO_REJECT"},
 		},
 	}
 }

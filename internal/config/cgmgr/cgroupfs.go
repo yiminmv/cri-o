@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/containers/libpod/v2/pkg/cgroups"
+	"github.com/containers/podman/v3/pkg/cgroups"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -94,4 +94,9 @@ func (*CgroupfsManager) MoveConmonToCgroup(cid, cgroupParent, conmonCgroup strin
 		return "", errors.Wrapf(err, "Failed to add conmon to cgroupfs sandbox cgroup")
 	}
 	return cgroupPath, nil
+}
+
+// CreateSandboxCgroup calls the helper function createSandboxCgroup for this manager.
+func (m *CgroupfsManager) CreateSandboxCgroup(sbParent, containerID string) error {
+	return createSandboxCgroup(sbParent, containerID, m)
 }

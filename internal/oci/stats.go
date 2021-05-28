@@ -5,7 +5,7 @@ import (
 	"syscall"
 
 	"github.com/containernetworking/plugins/pkg/ns"
-	"github.com/containers/libpod/v2/pkg/cgroups"
+	"github.com/containers/podman/v3/pkg/cgroups"
 	"github.com/cri-o/ocicni/pkg/ocicni"
 	"github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
@@ -33,7 +33,7 @@ func getContainerNetIO(netNsPath string) (received, transmitted uint64) {
 	ns.WithNetNSPath(netNsPath, func(_ ns.NetNS) error { // nolint: errcheck
 		link, err := netlink.LinkByName(ocicni.DefaultInterfaceName)
 		if err != nil {
-			logrus.Warnf(
+			logrus.Debugf(
 				"unable to retrieve network namespace link %s: %v",
 				ocicni.DefaultInterfaceName, err,
 			)

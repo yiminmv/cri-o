@@ -12,6 +12,7 @@ version
 wipe
 help
 h
+--absent-mount-sources-to-reject
 --additional-devices
 --apparmor-profile
 --big-files-temporary-dir
@@ -49,6 +50,7 @@ h
 --image-volumes
 --infra-ctr-cpuset
 --insecure-registry
+--internal-wipe
 --irqbalance-config-file
 --listen
 --log
@@ -71,6 +73,7 @@ h
 --profile-port
 --read-only
 --registries-conf
+--registries-conf-dir
 --registry
 --root
 --runroot

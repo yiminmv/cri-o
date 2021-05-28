@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/cri-o/cri-o/pkg/annotations"
 	"github.com/cri-o/cri-o/pkg/config"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/net/context"
@@ -49,24 +50,24 @@ type Runtime struct {
 // runtimes. Assumptions based on the fact that a container process runs
 // on the host will be limited to the RuntimeOCI implementation.
 type RuntimeImpl interface {
-	CreateContainer(*Container, string, bool) error
-	StartContainer(*Container) error
-	ExecContainer(*Container, []string, io.Reader, io.WriteCloser, io.WriteCloser,
+	CreateContainer(context.Context, *Container, string) error
+	StartContainer(context.Context, *Container) error
+	ExecContainer(context.Context, *Container, []string, io.Reader, io.WriteCloser, io.WriteCloser,
 		bool, <-chan remotecommand.TerminalSize) error
-	ExecSyncContainer(*Container, []string, int64) (*ExecSyncResponse, error)
-	UpdateContainer(*Container, *rspec.LinuxResources) error
+	ExecSyncContainer(context.Context, *Container, []string, int64) (*ExecSyncResponse, error)
+	UpdateContainer(context.Context, *Container, *rspec.LinuxResources) error
 	StopContainer(context.Context, *Container, int64) error
-	DeleteContainer(*Container) error
-	UpdateContainerStatus(*Container) error
-	PauseContainer(*Container) error
-	UnpauseContainer(*Container) error
-	ContainerStats(*Container, string) (*ContainerStats, error)
-	SignalContainer(*Container, syscall.Signal) error
-	AttachContainer(*Container, io.Reader, io.WriteCloser, io.WriteCloser,
+	DeleteContainer(context.Context, *Container) error
+	UpdateContainerStatus(context.Context, *Container) error
+	PauseContainer(context.Context, *Container) error
+	UnpauseContainer(context.Context, *Container) error
+	ContainerStats(context.Context, *Container, string) (*ContainerStats, error)
+	SignalContainer(context.Context, *Container, syscall.Signal) error
+	AttachContainer(context.Context, *Container, io.Reader, io.WriteCloser, io.WriteCloser,
 		bool, <-chan remotecommand.TerminalSize) error
 	PortForwardContainer(context.Context, *Container, string,
 		int32, io.ReadWriteCloser) error
-	ReopenContainerLog(*Container) error
+	ReopenContainerLog(context.Context, *Container) error
 	WaitContainerStateStopped(context.Context, *Container) error
 	CheckpointContainer(*Container, *rspec.Spec, bool) error
 	RestoreContainer(*Container, *rspec.Spec, int, string) error
@@ -129,7 +130,7 @@ func (r *Runtime) WaitContainerStateStopped(ctx context.Context, c *Container) e
 				return
 			default:
 				// Check if the container is stopped
-				if err := impl.UpdateContainerStatus(c); err != nil {
+				if err := impl.UpdateContainerStatus(ctx, c); err != nil {
 					done <- err
 					return
 				}
@@ -193,65 +194,23 @@ func (r *Runtime) PrivilegedWithoutHostDevices(handler string) (bool, error) {
 	return rh.PrivilegedWithoutHostDevices, nil
 }
 
-// AllowUsernsAnnotation searches through the AllowedAnnotations for
-// the userns annotation, checking whether this runtime allows processing of "io.kubernetes.cri-o.userns-mode"
-func (r *Runtime) AllowUsernsAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.UsernsModeAnnotation)
-}
-
-// AllowDevicesAnnotation searches through the AllowedAnnotations for
-// the devices annotation, checking whether this runtime allows processing of "io.kubernetes.cri-o.Devices"
-func (r *Runtime) AllowDevicesAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.DevicesAnnotation)
-}
-
-// AllowUnifiedCgroupAnnotation searches through the AllowedAnnotations for
-// the devices annotation, checking whether this runtime allows processing of "io.kubernetes.cri-o.UnifiedCgroup"
-func (r *Runtime) AllowUnifiedCgroupAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.UnifiedCgroupAnnotation)
-}
-
-// AllowCPULoadBalancingAnnotation searches through the AllowedAnnotations for
-// the CPU load balancing annotation, checking whether this runtime allows processing of  "cpu-load-balancing.crio.io"
-func (r *Runtime) AllowCPULoadBalancingAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.CPULoadBalancingAnnotation)
-}
-
-// AllowCPUQuotaAnnotation searches through the AllowedAnnotations for
-// the CPU quota annotation, checking whether this runtime allows processing of "cpu-quota.crio.io"
-func (r *Runtime) AllowCPUQuotaAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.CPUQuotaAnnotation)
-}
-
-// AllowIRQLoadBalancingAnnotation searches through the AllowedAnnotations for
-// the IRQ load balancing annotation, checking whether this runtime allows processing of "irq-load-balancing.crio.io"
-func (r *Runtime) AllowIRQLoadBalancingAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.IRQLoadBalancingAnnotation)
-}
-
-func (r *Runtime) AllowShmSizeAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.ShmSizeAnnotation)
-}
-
-// AllowOCISeccompBPFHookAnnotation searches through the AllowedAnnotations for
-// the OCI seccomp BPF hook annotation, checking whether this runtime allows
-// processing of "io.containers.trace-syscall".
-func (r *Runtime) AllowOCISeccompBPFHookAnnotation(handler string) (bool, error) {
-	return r.allowAnnotation(handler, annotations.OCISeccompBPFHookAnnotation)
-}
-
-func (r *Runtime) allowAnnotation(handler, annotation string) (bool, error) {
+// FilterDisallowedAnnotations filters annotations that are not specified in the allowed_annotations map
+// for a given handler.
+// This function returns an error if the runtime handler can't be found.
+// The annotations map is mutated in-place.
+func (r *Runtime) FilterDisallowedAnnotations(handler string, annotations map[string]string) error {
 	rh, err := r.getRuntimeHandler(handler)
 	if err != nil {
-		return false, err
+		return err
 	}
-	for _, ann := range rh.AllowedAnnotations {
-		if ann == annotation {
-			return true, nil
+	for ann := range annotations {
+		for _, disallowed := range rh.DisallowedAnnotations {
+			if strings.HasPrefix(ann, disallowed) {
+				delete(annotations, disallowed)
+			}
 		}
 	}
-
-	return false, nil
+	return nil
 }
 
 // RuntimeType returns the type of runtimeHandler
@@ -273,7 +232,7 @@ func (r *Runtime) newRuntimeImpl(c *Container) (RuntimeImpl, error) {
 	}
 
 	if rh.RuntimeType == config.RuntimeTypeVM {
-		return newRuntimeVM(rh.RuntimePath), nil
+		return newRuntimeVM(rh.RuntimePath, rh.RuntimeRoot), nil
 	}
 
 	// If the runtime type is different from "vm", then let's fallback
@@ -294,7 +253,7 @@ func (r *Runtime) RuntimeImpl(c *Container) (RuntimeImpl, error) {
 }
 
 // CreateContainer creates a container.
-func (r *Runtime) CreateContainer(c *Container, cgroupParent string, restore bool) error {
+func (r *Runtime) CreateContainer(ctx context.Context, c *Container, cgroupParent string) error {
 	// Instantiate a new runtime implementation for this new container
 	impl, err := r.newRuntimeImpl(c)
 	if err != nil {
@@ -306,47 +265,47 @@ func (r *Runtime) CreateContainer(c *Container, cgroupParent string, restore boo
 	r.runtimeImplMap[c.ID()] = impl
 	r.runtimeImplMapMutex.Unlock()
 
-	return impl.CreateContainer(c, cgroupParent, restore)
+	return impl.CreateContainer(ctx, c, cgroupParent)
 }
 
 // StartContainer starts a container.
-func (r *Runtime) StartContainer(c *Container) error {
+func (r *Runtime) StartContainer(ctx context.Context, c *Container) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.StartContainer(c)
+	return impl.StartContainer(ctx, c)
 }
 
 // ExecContainer prepares a streaming endpoint to execute a command in the container.
-func (r *Runtime) ExecContainer(c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (r *Runtime) ExecContainer(ctx context.Context, c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.ExecContainer(c, cmd, stdin, stdout, stderr, tty, resize)
+	return impl.ExecContainer(ctx, c, cmd, stdin, stdout, stderr, tty, resize)
 }
 
 // ExecSyncContainer execs a command in a container and returns it's stdout, stderr and return code.
-func (r *Runtime) ExecSyncContainer(c *Container, command []string, timeout int64) (*ExecSyncResponse, error) {
+func (r *Runtime) ExecSyncContainer(ctx context.Context, c *Container, command []string, timeout int64) (*ExecSyncResponse, error) {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return nil, err
 	}
 
-	return impl.ExecSyncContainer(c, command, timeout)
+	return impl.ExecSyncContainer(ctx, c, command, timeout)
 }
 
 // UpdateContainer updates container resources
-func (r *Runtime) UpdateContainer(c *Container, res *rspec.LinuxResources) error {
+func (r *Runtime) UpdateContainer(ctx context.Context, c *Container, res *rspec.LinuxResources) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.UpdateContainer(c, res)
+	return impl.UpdateContainer(ctx, c, res)
 }
 
 // StopContainer stops a container. Timeout is given in seconds.
@@ -360,7 +319,7 @@ func (r *Runtime) StopContainer(ctx context.Context, c *Container, timeout int64
 }
 
 // DeleteContainer deletes a container.
-func (r *Runtime) DeleteContainer(c *Container) (err error) {
+func (r *Runtime) DeleteContainer(ctx context.Context, c *Container) (err error) {
 	r.runtimeImplMapMutex.RLock()
 	impl, ok := r.runtimeImplMap[c.ID()]
 	r.runtimeImplMapMutex.RUnlock()
@@ -378,67 +337,67 @@ func (r *Runtime) DeleteContainer(c *Container) (err error) {
 		}()
 	}
 
-	return impl.DeleteContainer(c)
+	return impl.DeleteContainer(ctx, c)
 }
 
 // UpdateContainerStatus refreshes the status of the container.
-func (r *Runtime) UpdateContainerStatus(c *Container) error {
+func (r *Runtime) UpdateContainerStatus(ctx context.Context, c *Container) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.UpdateContainerStatus(c)
+	return impl.UpdateContainerStatus(ctx, c)
 }
 
 // PauseContainer pauses a container.
-func (r *Runtime) PauseContainer(c *Container) error {
+func (r *Runtime) PauseContainer(ctx context.Context, c *Container) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.PauseContainer(c)
+	return impl.PauseContainer(ctx, c)
 }
 
 // UnpauseContainer unpauses a container.
-func (r *Runtime) UnpauseContainer(c *Container) error {
+func (r *Runtime) UnpauseContainer(ctx context.Context, c *Container) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.UnpauseContainer(c)
+	return impl.UnpauseContainer(ctx, c)
 }
 
 // ContainerStats provides statistics of a container.
-func (r *Runtime) ContainerStats(c *Container, cgroup string) (*ContainerStats, error) {
+func (r *Runtime) ContainerStats(ctx context.Context, c *Container, cgroup string) (*ContainerStats, error) {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return nil, err
 	}
 
-	return impl.ContainerStats(c, cgroup)
+	return impl.ContainerStats(ctx, c, cgroup)
 }
 
 // SignalContainer sends a signal to a container process.
-func (r *Runtime) SignalContainer(c *Container, sig syscall.Signal) error {
+func (r *Runtime) SignalContainer(ctx context.Context, c *Container, sig syscall.Signal) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.SignalContainer(c, sig)
+	return impl.SignalContainer(ctx, c, sig)
 }
 
 // AttachContainer attaches IO to a running container.
-func (r *Runtime) AttachContainer(c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+func (r *Runtime) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.AttachContainer(c, inputStream, outputStream, errorStream, tty, resize)
+	return impl.AttachContainer(ctx, c, inputStream, outputStream, errorStream, tty, resize)
 }
 
 // PortForwardContainer forwards the specified port provides statistics of a container.
@@ -452,13 +411,13 @@ func (r *Runtime) PortForwardContainer(ctx context.Context, c *Container, netNsP
 }
 
 // ReopenContainerLog reopens the log file of a container.
-func (r *Runtime) ReopenContainerLog(c *Container) error {
+func (r *Runtime) ReopenContainerLog(ctx context.Context, c *Container) error {
 	impl, err := r.RuntimeImpl(c)
 	if err != nil {
 		return err
 	}
 
-	return impl.ReopenContainerLog(c)
+	return impl.ReopenContainerLog(ctx, c)
 }
 
 // ExecSyncResponse is returned from ExecSync.
@@ -498,4 +457,41 @@ func (r *Runtime) RestoreContainer(c *Container, sbSpec *rspec.Spec, infraPid in
 	}
 
 	return impl.RestoreContainer(c, sbSpec, infraPid, cgroupParent)
+}
+// BuildContainerdBinaryName() is responsible for ensuring the binary passed will
+// be properly converted to the containerd binary naming pattern.
+//
+// This method should never ever be called from anywhere else but the runtimeVM,
+// and the only reason its exported here is in order to get some test coverage.
+func BuildContainerdBinaryName(path string) string {
+	// containerd expects the runtime name to be in the following pattern:
+	//        ($dir.)?$prefix.$name.$version
+	//        -------- ------ ----- ---------
+	//              |     |     |      |
+	//              v     |     |      |
+	//      "/usr/local/bin"    |      |
+	//        (optional)  |     |      |
+	//                    v     |      |
+	//             "containerd.shim."  |
+	//                          |      |
+	//                          v      |
+	//                     "kata-qemu" |
+	//                                 v
+	//                                "v2"
+	const expectedPrefix = "containerd-shim-"
+	const expectedVersion = "-v2"
+
+	const binaryPrefix = "containerd.shim"
+	const binaryVersion = "v2"
+
+	runtimeDir := filepath.Dir(path)
+	// This is only safe to do because the runtime_path, for the VM runtime_type, is validated in the config,
+	// allowing us to take the liberty to simply go ahead and check, without having to ensure we're receiving
+	// the binary in the expected form.
+	//
+	// For clarity, it could be ensured twice, but we count on the developer to never ever call this function
+	// in a different context from the one used in the runtime_vm.go file.
+	runtimeName := strings.SplitAfter(strings.Split(filepath.Base(path), expectedVersion)[0], expectedPrefix)[1]
+
+	return filepath.Join(runtimeDir, fmt.Sprintf("%s.%s.%s", binaryPrefix, runtimeName, binaryVersion))
 }

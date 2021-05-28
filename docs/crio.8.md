@@ -11,6 +11,7 @@ crio - OCI-based implementation of Kubernetes Container Runtime Interface
 crio
 
 ```
+[--absent-mount-sources-to-reject]=[value]
 [--additional-devices]=[value]
 [--apparmor-profile]=[value]
 [--big-files-temporary-dir]=[value]
@@ -49,6 +50,7 @@ crio
 [--image-volumes]=[value]
 [--infra-ctr-cpuset]=[value]
 [--insecure-registry]=[value]
+[--internal-wipe]
 [--irqbalance-config-file]=[value]
 [--listen]=[value]
 [--log-dir]=[value]
@@ -117,6 +119,8 @@ crio [GLOBAL OPTIONS] command [COMMAND OPTIONS] [ARGUMENTS...]
 ```
 
 # GLOBAL OPTIONS
+
+**--absent-mount-sources-to-reject**="": A list of paths that, when absent from the host, will cause a container creation to fail (as opposed to the current behavior of creating a directory). (default: [])
 
 **--additional-devices**="": Devices to add to the containers  (default: [])
 
@@ -235,6 +239,8 @@ crio [GLOBAL OPTIONS] command [COMMAND OPTIONS] [ARGUMENTS...]
        their CA to their system's list of trusted CAs instead of using
        '--insecure-registry'. (default: [])
 
+**--internal-wipe**: Whether CRI-O should wipe containers after a reboot and images after an upgrade when the server starts. If set to false, one must run `crio wipe` to wipe the containers and images in these situations.
+
 **--irqbalance-config-file**="": The irqbalance service config file which is used by CRI-O. (default: /etc/sysconfig/irqbalance)
 
 **--listen**="": Path to the CRI-O socket (default: /var/run/crio/crio.sock)
@@ -263,7 +269,7 @@ crio [GLOBAL OPTIONS] command [COMMAND OPTIONS] [ARGUMENTS...]
 
 **--pause-command**="": Path to the pause executable in the pause image (default: /pause)
 
-**--pause-image**="": Image which contains the pause executable (default: k8s.gcr.io/pause:3.2)
+**--pause-image**="": Image which contains the pause executable (default: k8s.gcr.io/pause:3.5)
 
 **--pause-image-auth-file**="": Path to a config file containing credentials for --pause-image (default: "")
 

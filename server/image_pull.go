@@ -8,7 +8,7 @@ import (
 	"time"
 
 	imageTypes "github.com/containers/image/v5/types"
-	libpodImage "github.com/containers/libpod/v2/libpod/image"
+	libpodImage "github.com/containers/podman/v3/libpod/image"
 	"github.com/cri-o/cri-o/internal/log"
 	"github.com/cri-o/cri-o/internal/storage"
 	"github.com/cri-o/cri-o/server/cri/types"
@@ -69,6 +69,7 @@ func (s *Server) PullImage(ctx context.Context, req *types.PullImageRequest) (*t
 		if !inProgress {
 			pullOp = &pullOperation{}
 			s.pullOperationsInProgress[pullArgs] = pullOp
+			storage.ImageBeingPulled.Store(pullArgs.image, true)
 			pullOp.wg.Add(1)
 		}
 		return pullOp, inProgress
@@ -79,6 +80,7 @@ func (s *Server) PullImage(ctx context.Context, req *types.PullImageRequest) (*t
 		defer func() {
 			s.pullOperationsLock.Lock()
 			delete(s.pullOperationsInProgress, pullArgs)
+			storage.ImageBeingPulled.Delete(pullArgs.image)
 			pullOp.wg.Done()
 			s.pullOperationsLock.Unlock()
 		}()
@@ -103,7 +105,8 @@ func (s *Server) PullImage(ctx context.Context, req *types.PullImageRequest) (*t
 // readability and maintainability.
 func (s *Server) pullImage(ctx context.Context, pullArgs *pullArguments) (string, error) {
 	var err error
-	sourceCtx := *s.config.SystemContext // A shallow copy we can modify
+	sourceCtx := *s.config.SystemContext   // A shallow copy we can modify
+	sourceCtx.DockerLogMirrorChoice = true // Add info level log of the pull source
 	if pullArgs.credentials.Username != "" {
 		sourceCtx.DockerAuthConfig = &pullArgs.credentials
 	}

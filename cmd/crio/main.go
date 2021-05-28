@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/containers/libpod/v2/pkg/hooks/0.1.0"
+	_ "github.com/containers/podman/v3/pkg/hooks/0.1.0"
 	"github.com/containers/storage/pkg/reexec"
 	"github.com/cri-o/cri-o/internal/criocli"
 	"github.com/cri-o/cri-o/internal/log"
@@ -141,12 +141,11 @@ func main() {
 			return err
 		}
 
-		cf := &logrus.TextFormatter{
+		logrus.SetFormatter(&logrus.TextFormatter{
 			TimestampFormat: "2006-01-02 15:04:05.000000000Z07:00",
 			FullTimestamp:   true,
-		}
-
-		logrus.SetFormatter(cf)
+		})
+		version.LogVersion()
 
 		level, err := logrus.ParseLevel(config.LogLevel)
 		if err != nil {
@@ -213,7 +212,11 @@ func main() {
 
 		lis, err := server.Listen("unix", config.Listen)
 		if err != nil {
-			logrus.Fatalf("failed to listen: %v", err)
+			logrus.Fatalf("Failed to listen: %v", err)
+		}
+
+		if err := os.Chmod(config.Listen, 0o660); err != nil {
+			logrus.Fatalf("Failed to chmod listen socket %s: %v", config.Listen, err)
 		}
 
 		grpcServer := grpc.NewServer(
@@ -250,6 +253,16 @@ func main() {
 				logrus.Error(err)
 			}
 
+			// Write "$CleanShutdownFile".supported to show crio-wipe that
+			// we should be wiping if the CleanShutdownFile wasn't found.
+			// This protects us from wiping after an upgrade from a version that don't support
+			// CleanShutdownFile.
+			f, err := os.Create(config.CleanShutdownSupportedFileName())
+			if err != nil {
+				logrus.Errorf("Writing clean shutdown supported file: %v", err)
+			}
+			f.Close()
+
 			// and sync the changes to disk
 			if err := utils.SyncParent(config.CleanShutdownFile); err != nil {
 				logrus.Errorf("failed to sync parent directory of clean shutdown file: %v", err)
@@ -264,7 +277,7 @@ func main() {
 		notifySystem()
 
 		go func() {
-			crioServer.StartExitMonitor()
+			crioServer.StartExitMonitor(ctx)
 		}()
 		hookSync := make(chan error, 2)
 		if crioServer.ContainerServer.Hooks == nil {
@@ -328,23 +341,20 @@ func main() {
 		cancel()
 
 		<-streamServerCloseCh
-		logrus.Debug("closed stream server")
+		logrus.Debugf("closed stream server")
 		<-serverMonitorsCh
-		logrus.Debug("closed monitors")
+		logrus.Debugf("closed monitors")
 		err = <-hookSync
 		if err == nil || err == context.Canceled {
-			logrus.Debug("closed hook monitor")
+			logrus.Debugf("closed hook monitor")
 		} else {
 			logrus.Errorf("hook monitor failed: %v", err)
 		}
 		<-serverCloseCh
-		logrus.Debug("closed main server")
+		logrus.Debugf("closed main server")
 
 		return nil
 	}
-
-	// Log our version early at startup
-	version.LogVersion()
 
 	if err := app.Run(os.Args); err != nil {
 		logrus.Fatal(err)

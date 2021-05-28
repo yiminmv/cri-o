@@ -20,8 +20,8 @@ import (
 	istorage "github.com/containers/image/v5/storage"
 	"github.com/containers/image/v5/transports/alltransports"
 	"github.com/containers/image/v5/types"
-	"github.com/containers/libpod/v2/pkg/rootless"
 	encconfig "github.com/containers/ocicrypt/config"
+	"github.com/containers/podman/v3/pkg/rootless"
 	"github.com/containers/storage"
 	"github.com/containers/storage/pkg/reexec"
 	systemdDbus "github.com/coreos/go-systemd/v22/dbus"
@@ -92,6 +92,9 @@ type imageService struct {
 	imageCacheLock sync.Mutex
 	ctx            context.Context
 }
+
+// ImageBeingPulled map[string]bool to keep track of the images haven't done pulling.
+var ImageBeingPulled sync.Map
 
 // CgroupPullConfiguration
 type CgroupPullConfiguration struct {
@@ -316,6 +319,19 @@ func (svc *imageService) ListImages(systemContext *types.SystemContext, filter s
 			}
 			results, err = svc.appendCachedResult(systemContext, ref, image, results, newImageCache)
 			if err != nil {
+				// skip reporting errors if the images haven't finished pulling
+				if os.IsNotExist(errors.Cause(err)) {
+					donePulling := true
+					for _, name := range image.Names {
+						if _, ok := ImageBeingPulled.Load(name); ok {
+							donePulling = false
+							break
+						}
+					}
+					if !donePulling {
+						continue
+					}
+				}
 				return nil, err
 			}
 		}
@@ -745,6 +761,10 @@ func (svc *imageService) ResolveNames(systemContext *types.SystemContext, imageN
 		return nil, err
 	}
 
+	// Set shortNameMode to permissive so we fall back to look through the search registries list
+	// if the short name alias is not found in the alias table
+	permissive := types.ShortNameModePermissive
+	systemContext.ShortNameMode = &permissive
 	resolved, err := shortnames.Resolve(systemContext, imageName)
 	if err != nil {
 		return nil, err

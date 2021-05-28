@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/server/cri/types"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
@@ -28,9 +29,14 @@ func (s StreamService) Exec(containerID string, cmd []string, stdin io.Reader, s
 		return status.Errorf(codes.NotFound, "could not find container %q: %v", containerID, err)
 	}
 
-	if err := c.IsAlive(); err != nil {
-		return status.Errorf(codes.NotFound, "container is not created or running: %v", err)
+	if err := s.runtimeServer.Runtime().UpdateContainerStatus(s.ctx, c); err != nil {
+		return err
 	}
 
-	return s.runtimeServer.Runtime().ExecContainer(c, cmd, stdin, stdout, stderr, tty, resize)
+	cState := c.State()
+	if !(cState.Status == oci.ContainerStateRunning || cState.Status == oci.ContainerStateCreated) {
+		return fmt.Errorf("container is not created or running")
+	}
+
+	return s.runtimeServer.Runtime().ExecContainer(s.ctx, c, cmd, stdin, stdout, stderr, tty, resize)
 }

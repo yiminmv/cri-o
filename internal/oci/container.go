@@ -13,7 +13,7 @@ import (
 	"time"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
-	"github.com/containers/libpod/v2/pkg/cgroups"
+	"github.com/containers/podman/v3/pkg/cgroups"
 	"github.com/containers/storage/pkg/idtools"
 	ann "github.com/cri-o/cri-o/pkg/annotations"
 	json "github.com/json-iterator/go"
@@ -73,6 +73,10 @@ type Container struct {
 	stdinOnce          bool
 	created            bool
 	spoofed            bool
+	stopping           bool
+	stopTimeoutChan    chan time.Duration
+	stoppedChan        chan struct{}
+	stopLock           sync.Mutex
 }
 
 // Metadata holds all necessary information for building the container name.
@@ -133,11 +137,13 @@ func NewContainer(id, name, bundlePath, logPath string, labels, crioAnnotations,
 		dir:             dir,
 		state:           state,
 		stopSignal:      stopSignal,
+		stopTimeoutChan: make(chan time.Duration, 1),
+		stoppedChan:     make(chan struct{}, 1),
 	}
 	return c, nil
 }
 
-func NewSpoofedContainer(id, name string, labels map[string]string, created time.Time, dir string) *Container {
+func NewSpoofedContainer(id, name string, labels map[string]string, sandbox string, created time.Time, dir string) *Container {
 	state := &ContainerState{}
 	state.Created = created
 	state.Started = created
@@ -148,6 +154,7 @@ func NewSpoofedContainer(id, name string, labels map[string]string, created time
 		spoofed: true,
 		state:   state,
 		dir:     dir,
+		sandbox: sandbox,
 	}
 	c.annotations = map[string]string{
 		ann.SpoofedContainer: "true",
@@ -474,6 +481,9 @@ func (c *Container) pid() (int, error) {
 	if err := c.verifyPid(); err != nil {
 		return 0, err
 	}
+	if err := unix.Kill(c.state.InitPid, 0); err == unix.ESRCH {
+		return 0, errors.Wrapf(err, "check whether %d is running", c.state.InitPid)
+	}
 	return c.state.InitPid, nil
 }
 
@@ -554,4 +564,35 @@ func (c *Container) ShouldBeStopped() error {
 // is not needed, but sandbox metadata should be stored with a spoofed infra container.
 func (c *Container) Spoofed() bool {
 	return c.spoofed
+}
+
+// SetAsStopping marks a container as being stopped.
+// If a stop is currently happening, it also sends the new timeout
+// along the stopTimeoutChan, allowing the in-progress stop
+// to stop faster, or ignore the new stop timeout.
+func (c *Container) SetAsStopping(timeout int64) {
+	// First, need to check if the container is already stopping
+	c.stopLock.Lock()
+	defer c.stopLock.Unlock()
+	if c.stopping {
+		// If so, we shouldn't wait forever on the opLock.
+		// This can cause issues where the container stop gets DOSed by a very long
+		// timeout, followed a shorter one coming in.
+		// Instead, interrupt the other stop with this new one.
+		select {
+		case c.stopTimeoutChan <- time.Duration(timeout) * time.Second:
+		case <-c.stoppedChan: // This case is to avoid waiting forever once another routine has finished.
+			return
+		}
+	}
+	// Regardless, set the container as actively stopping.
+	c.stopping = true
+}
+
+// SetAsNotStopping unsets the stopping field indicating to new callers that the container
+// is no longer actively stopping.
+func (c *Container) SetAsNotStopping() {
+	c.stopLock.Lock()
+	c.stopping = false
+	c.stopLock.Unlock()
 }

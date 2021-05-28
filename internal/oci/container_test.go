@@ -496,7 +496,7 @@ var _ = t.Describe("Container", func() {
 
 var _ = t.Describe("SpoofedContainer", func() {
 	It("should succeed to get the container fields", func() {
-		sut := oci.NewSpoofedContainer("id", "name", map[string]string{"key": "label"}, time.Now(), "dir")
+		sut := oci.NewSpoofedContainer("id", "name", map[string]string{"key": "label"}, "sbox", time.Now(), "dir")
 		// Given
 		// When
 		// Then
@@ -508,5 +508,6 @@ var _ = t.Describe("SpoofedContainer", func() {
 		Expect(sut.CreatedAt().UnixNano()).
 			To(BeNumerically("<", time.Now().UnixNano()))
 		Expect(sut.Dir()).To(Equal("dir"))
+		Expect(sut.Sandbox()).To(Equal("sbox"))
 	})
 })

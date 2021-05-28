@@ -38,13 +38,15 @@ var _ = t.Describe("Oci", func() {
 			defaultRuntime     = "runc"
 			usernsRuntime      = "userns"
 			performanceRuntime = "high-performance"
+			vmRuntime          = "kata"
 		)
 		runtimes := libconfig.Runtimes{
 			defaultRuntime: {
 				RuntimePath: "/bin/sh",
 				RuntimeType: "",
 				RuntimeRoot: "/run/runc",
-			}, invalidRuntime: {},
+			},
+			invalidRuntime: {},
 			usernsRuntime: {
 				RuntimePath:        "/bin/sh",
 				RuntimeType:        "",
@@ -61,6 +63,12 @@ var _ = t.Describe("Oci", func() {
 					annotations.CPUQuotaAnnotation,
 					annotations.OCISeccompBPFHookAnnotation,
 				},
+			},
+			vmRuntime: {
+				RuntimePath:                  "/usr/bin/containerd-shim-kata-v2",
+				RuntimeType:                  "vm",
+				RuntimeRoot:                  "/run/vc",
+				PrivilegedWithoutHostDevices: true,
 			},
 		}
 
@@ -93,77 +101,82 @@ var _ = t.Describe("Oci", func() {
 			Expect(err).To(BeNil())
 			Expect(handler).To(Equal(runtimes[defaultRuntime]))
 		})
-		It("AllowUsernsAnnotation should be true when set", func() {
+		It("should return an OCI runtime type if none is set", func() {
 			// Given
 			// When
-			allowed, err := sut.AllowUsernsAnnotation(usernsRuntime)
+			runtimeType, err := sut.RuntimeType(defaultRuntime)
 
 			// Then
 			Expect(err).To(BeNil())
-			Expect(allowed).To(Equal(true))
+			Expect(runtimeType).To(Equal(""))
 		})
-		It("AllowUsernsAnnotation should be false when not set", func() {
+		It("should return a VM runtime type when it is set", func() {
 			// Given
 			// When
-			allowed, err := sut.AllowUsernsAnnotation(defaultRuntime)
+			runtimeType, err := sut.RuntimeType(vmRuntime)
 
 			// Then
 			Expect(err).To(BeNil())
-			Expect(allowed).To(Equal(false))
+			Expect(runtimeType).To(Equal(config.RuntimeTypeVM))
 		})
-		It("AllowUsernsAnnotation should be false when runtime invalid", func() {
+		Context("FilterDisallowedAnnotations", func() {
+			It("should succeed to filter disallowed annotation", func() {
+				// Given
+				testAnn := map[string]string{
+					annotations.DevicesAnnotation:          "/dev",
+					annotations.IRQLoadBalancingAnnotation: "true",
+				}
+				Expect(runtimes[performanceRuntime].ValidateRuntimeAllowedAnnotations()).To(BeNil())
+
+				// When
+				err := sut.FilterDisallowedAnnotations(performanceRuntime, testAnn)
+
+				// Then
+				Expect(err).To(BeNil())
+				_, ok := testAnn[annotations.DevicesAnnotation]
+				Expect(ok).To(Equal(false))
+
+				_, ok = testAnn[annotations.IRQLoadBalancingAnnotation]
+				Expect(ok).To(Equal(true))
+			})
+			It("should fail to filter disallowed annotation of unknown runtime", func() {
+				// Given
+				testAnn := map[string]string{}
+
+				// When
+				err := sut.FilterDisallowedAnnotations("invalid", testAnn)
+
+				// Then
+				Expect(err).NotTo(BeNil())
+			})
+		})
+
+		It("PrivilegedWithoutHostDevices should be true when set", func() {
 			// Given
 			// When
-			allowed, err := sut.AllowUsernsAnnotation(invalidRuntime)
+			privileged, err := sut.PrivilegedWithoutHostDevices(vmRuntime)
+
+			// Then
+			Expect(err).To(BeNil())
+			Expect(privileged).To(Equal(true))
+		})
+		It("PrivilegedWithoutHostDevices should be false when runtime invalid", func() {
+			// Given
+			// When
+			privileged, err := sut.PrivilegedWithoutHostDevices(invalidRuntime)
 
 			// Then
 			Expect(err).NotTo(BeNil())
-			Expect(allowed).To(Equal(false))
+			Expect(privileged).To(Equal(false))
 		})
-		It("AllowCPULoadBalancingAnnotation should be true when set", func() {
+		It("PrivilegedWithoutHostDevices should be false when runtime is the default", func() {
 			// Given
 			// When
-			allowed, err := sut.AllowCPULoadBalancingAnnotation(performanceRuntime)
+			privileged, err := sut.PrivilegedWithoutHostDevices(defaultRuntime)
 
 			// Then
 			Expect(err).To(BeNil())
-			Expect(allowed).To(Equal(true))
-		})
-		It("AllowCPUQuotaAnnotation should be true when set", func() {
-			// Given
-			// When
-			allowed, err := sut.AllowCPUQuotaAnnotation(performanceRuntime)
-
-			// Then
-			Expect(err).To(BeNil())
-			Expect(allowed).To(Equal(true))
-		})
-		It("AllowIRQLoadBalancingAnnotation should be true when set", func() {
-			// Given
-			// When
-			allowed, err := sut.AllowIRQLoadBalancingAnnotation(performanceRuntime)
-
-			// Then
-			Expect(err).To(BeNil())
-			Expect(allowed).To(Equal(true))
-		})
-		It("AllowOCISeccompBPFHookAnnotation should be true when set", func() {
-			// Given
-			// When
-			allowed, err := sut.AllowOCISeccompBPFHookAnnotation(performanceRuntime)
-
-			// Then
-			Expect(err).To(BeNil())
-			Expect(allowed).To(Equal(true))
-		})
-		It("AllowOCISeccompBPFHookAnnotation should be false when runtime invalid", func() {
-			// Given
-			// When
-			allowed, err := sut.AllowOCISeccompBPFHookAnnotation(invalidRuntime)
-
-			// Then
-			Expect(err).NotTo(BeNil())
-			Expect(allowed).To(Equal(false))
+			Expect(privileged).To(Equal(false))
 		})
 		It("CheckpointContainer should succeed", func() {
 			// Given
@@ -313,6 +326,28 @@ var _ = t.Describe("Oci", func() {
 
 			// Then
 			Expect(result).To(ContainSubstring("error"))
+		})
+	})
+
+	t.Describe("BuildContainerdBinaryName", func() {
+		It("Simple binary name (containerd-shim-kata-v2)", func() {
+			binaryName := oci.BuildContainerdBinaryName("containerd-shim-kata-v2")
+			Expect(binaryName).To(Equal("containerd.shim.kata.v2"))
+		})
+
+		It("Full binary path with a simple binary name (/usr/bin/containerd-shim-kata-v2)", func() {
+			binaryName := oci.BuildContainerdBinaryName("/usr/bin/containerd-shim-kata-v2")
+			Expect(binaryName).To(Equal("/usr/bin/containerd.shim.kata.v2"))
+		})
+
+		It("Composed binary name (containerd-shim-kata-qemu-with-dax-support-v2)", func() {
+			binaryName := oci.BuildContainerdBinaryName("containerd-shim-kata-qemu-with-dax-support-v2")
+			Expect(binaryName).To(Equal("containerd.shim.kata-qemu-with-dax-support.v2"))
+		})
+
+		It("Full binary path with a composed binary name (/usr/bin/containerd-shim-kata-v2)", func() {
+			binaryName := oci.BuildContainerdBinaryName("/usr/bin/containerd-shim-kata-qemu-with-dax-support-v2")
+			Expect(binaryName).To(Equal("/usr/bin/containerd.shim.kata-qemu-with-dax-support.v2"))
 		})
 	})
 })

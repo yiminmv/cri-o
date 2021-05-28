@@ -18,13 +18,16 @@ import (
 
 	imageTypes "github.com/containers/image/v5/types"
 	"github.com/containers/storage/pkg/idtools"
+	storageTypes "github.com/containers/storage/types"
 	"github.com/cri-o/cri-o/internal/hostport"
 	"github.com/cri-o/cri-o/internal/lib"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
+	"github.com/cri-o/cri-o/internal/log"
 	"github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/internal/resourcestore"
 	"github.com/cri-o/cri-o/internal/runtimehandlerhooks"
 	"github.com/cri-o/cri-o/internal/storage"
+	"github.com/cri-o/cri-o/internal/version"
 	libconfig "github.com/cri-o/cri-o/pkg/config"
 	"github.com/cri-o/cri-o/server/cri/types"
 	"github.com/cri-o/cri-o/server/metrics"
@@ -47,6 +50,7 @@ var errSandboxNotCreated = errors.New("sandbox not created")
 
 // StreamService implements streaming.Runtime.
 type StreamService struct {
+	ctx                 context.Context
 	runtimeServer       *Server // needed by Exec() endpoint
 	streamServer        streaming.Server
 	streamServerCloseCh chan struct{}
@@ -157,23 +161,28 @@ func (s *Server) getPortForward(req *types.PortForwardRequest) (*types.PortForwa
 	return s.stream.streamServer.GetPortForward(req)
 }
 
-func (s *Server) restore(ctx context.Context) {
+// restore attempts to restore the sandboxes and containers.
+// For every sandbox it fails to restore, it starts a cleanup routine attempting to call CNI DEL
+// For every container it fails to restore, it returns that containers image, so that
+// it can be cleaned up (if we're using internal_wipe).
+func (s *Server) restore(ctx context.Context) []string {
+	containersAndTheirImages := map[string]string{}
 	containers, err := s.Store().Containers()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		logrus.Warnf("could not read containers and sandboxes: %v", err)
+		log.Warnf(ctx, "could not read containers and sandboxes: %v", err)
 	}
 	pods := map[string]*storage.RuntimeContainerMetadata{}
 	podContainers := map[string]*storage.RuntimeContainerMetadata{}
 	names := map[string][]string{}
-	deletedPods := map[string]bool{}
+	deletedPods := map[string]*sandbox.Sandbox{}
 	for i := range containers {
 		metadata, err2 := s.StorageRuntimeServer().GetContainerMetadata(containers[i].ID)
 		if err2 != nil {
-			logrus.Warnf("error parsing metadata for %s: %v, ignoring", containers[i].ID, err2)
+			log.Warnf(ctx, "error parsing metadata for %s: %v, ignoring", containers[i].ID, err2)
 			continue
 		}
 		if !storage.IsCrioContainer(&metadata) {
-			logrus.Debugf("container %s determined to not be a CRI-O container or sandbox", containers[i].ID)
+			log.Debugf(ctx, "container %s determined to not be a CRI-O container or sandbox", containers[i].ID)
 			continue
 		}
 		names[containers[i].ID] = containers[i].Names
@@ -181,19 +190,21 @@ func (s *Server) restore(ctx context.Context) {
 			pods[containers[i].ID] = &metadata
 		} else {
 			podContainers[containers[i].ID] = &metadata
+			containersAndTheirImages[containers[i].ID] = containers[i].ImageID
 		}
 	}
 
 	// Go through all the pods and check if it can be restored. If an error occurs, delete the pod and any containers
 	// associated with it. Release the pod and container names as well.
-	for sbID, metadata := range pods {
-		if err = s.LoadSandbox(sbID); err == nil {
+	for sbID := range pods {
+		sb, err := s.LoadSandbox(ctx, sbID)
+		if err == nil {
 			continue
 		}
-		logrus.Warnf("could not restore sandbox %s container %s: %v", metadata.PodID, sbID, err)
+		log.Warnf(ctx, "could not restore sandbox %s; deleting it and containers underneath it: %v", sbID, err)
 		for _, n := range names[sbID] {
-			if err := s.Store().DeleteContainer(n); err != nil {
-				logrus.Warnf("unable to delete container %s: %v", n, err)
+			if err := s.Store().DeleteContainer(n); err != nil && err != storageTypes.ErrNotAContainer {
+				log.Warnf(ctx, "unable to delete container %s: %v", n, err)
 			}
 			// Release the infra container name and the pod name for future use
 			if strings.Contains(n, infraName) {
@@ -203,69 +214,96 @@ func (s *Server) restore(ctx context.Context) {
 			}
 		}
 		// Go through the containers and delete any container that was under the deleted pod
-		logrus.Warnf("deleting all containers under sandbox %s since it could not be restored", sbID)
 		for k, v := range podContainers {
-			if v.PodID == sbID {
-				for _, n := range names[k] {
-					if err := s.Store().DeleteContainer(n); err != nil {
-						logrus.Warnf("unable to delete container %s: %v", n, err)
-					}
-					// Release the container name for future use
-					s.ReleaseContainerName(n)
-				}
+			if v.PodID != sbID {
+				continue
 			}
+			for _, n := range names[k] {
+				if err := s.Store().DeleteContainer(n); err != nil && err != storageTypes.ErrNotAContainer {
+					log.Warnf(ctx, "unable to delete container %s: %v", n, err)
+				}
+				// Release the container name for future use
+				s.ReleaseContainerName(n)
+			}
+			// Remove the container from the list of podContainers, or else we'll retry the delete later,
+			// causing a useless debug message.
+			delete(podContainers, k)
 		}
-		// Add the pod id to the list of deletedPods so we don't try to restore IPs for it later on
-		deletedPods[sbID] = true
+		// Add the pod id to the list of deletedPods, to be able to call CNI DEL on the sandbox network.
+		// Unfortunately, if we weren't able to restore a sandbox, then there's little that can be done
+		if sb != nil {
+			deletedPods[sbID] = sb
+		}
 	}
 
 	// Go through all the containers and check if it can be restored. If an error occurs, delete the conainer and
 	// release the name associated with you.
 	for containerID := range podContainers {
-		if err := s.LoadContainer(containerID); err != nil {
-			// containers of other runtimes should not be deleted
-			if err == lib.ErrIsNonCrioContainer {
-				logrus.Infof("ignoring non CRI-O container %s", containerID)
-			} else {
-				logrus.Warnf("could not restore container %s: %v", containerID, err)
-				for _, n := range names[containerID] {
-					if err := s.Store().DeleteContainer(n); err != nil {
-						logrus.Warnf("unable to delete container %s: %v", n, err)
-					}
-					// Release the container name
-					s.ReleaseContainerName(n)
-				}
+		err := s.LoadContainer(ctx, containerID)
+		if err == nil || err == lib.ErrIsNonCrioContainer {
+			delete(containersAndTheirImages, containerID)
+			continue
+		}
+		log.Warnf(ctx, "Could not restore container %s: %v", containerID, err)
+		for _, n := range names[containerID] {
+			if err := s.Store().DeleteContainer(n); err != nil && err != storageTypes.ErrNotAContainer {
+				log.Warnf(ctx, "Unable to delete container %s: %v", n, err)
 			}
+			// Release the container name
+			s.ReleaseContainerName(n)
 		}
 	}
 
+	// Cleanup the deletedPods in the networking plugin
+	wipeResourceCleaner := resourcestore.NewResourceCleaner()
+	for _, sb := range deletedPods {
+		sb := sb
+		cleanupFunc := func() error {
+			err := s.networkStop(context.Background(), sb)
+			if err == nil {
+				log.Infof(ctx, "Successfully cleaned up network for pod %s", sb.ID())
+			}
+			return err
+		}
+		wipeResourceCleaner.Add(ctx, "cleanup sandbox network", cleanupFunc)
+	}
+
+	// If any failed to be deleted, the networking plugin is likely not ready.
+	// The cleanup should be retried until it succeeds.
+	go func() {
+		if err := wipeResourceCleaner.Cleanup(); err != nil {
+			log.Errorf(ctx, "Cleanup during server startup failed: %v", err)
+		}
+	}()
+
 	// Restore sandbox IPs
 	for _, sb := range s.ListSandboxes() {
-		// Clean up networking if pod couldn't be restored and was deleted
-		if ok := deletedPods[sb.ID()]; ok {
-			if err := s.networkStop(ctx, sb); err != nil {
-				logrus.Warnf("error stopping network on restore cleanup %v:", err)
-			}
-			continue
-		}
 		ips, err := s.getSandboxIPs(sb)
 		if err != nil {
-			logrus.Warnf("could not restore sandbox IP for %v: %v", sb.ID(), err)
+			log.Warnf(ctx, "Could not restore sandbox IP for %v: %v", sb.ID(), err)
 			continue
 		}
 		sb.AddIPs(ips)
 	}
+
+	// Return a slice of images to remove, if internal_wipe is set.
+	imagesOfDeletedContainers := []string{}
+	for _, image := range containersAndTheirImages {
+		imagesOfDeletedContainers = append(imagesOfDeletedContainers, image)
+	}
+
+	return imagesOfDeletedContainers
 }
 
 // cleanupSandboxesOnShutdown Remove all running Sandboxes on system shutdown
 func (s *Server) cleanupSandboxesOnShutdown(ctx context.Context) {
 	_, err := os.Stat(shutdownFile)
 	if err == nil || !os.IsNotExist(err) {
-		logrus.Debugf("shutting down all sandboxes, on shutdown")
+		log.Debugf(ctx, "shutting down all sandboxes, on shutdown")
 		s.stopAllPodSandboxes(ctx)
 		err = os.Remove(shutdownFile)
 		if err != nil {
-			logrus.Warnf("Failed to remove %q", shutdownFile)
+			log.Warnf(ctx, "Failed to remove %q", shutdownFile)
 		}
 	}
 }
@@ -416,8 +454,9 @@ func New(
 		return nil, errors.Wrap(err, "close stdin")
 	}
 
-	s.restore(ctx)
+	deletedImages := s.restore(ctx)
 	s.cleanupSandboxesOnShutdown(ctx)
+	s.wipeIfAppropriate(ctx, deletedImages)
 
 	var bindAddressStr string
 	bindAddress := net.ParseIP(config.StreamAddress)
@@ -459,8 +498,9 @@ func New(
 			Certificates:       []tls.Certificate{cert},
 		}
 	}
+	s.stream.ctx = ctx
 	s.stream.runtimeServer = s
-	s.stream.streamServer, err = streaming.NewServer(streamServerConfig, s.stream)
+	s.stream.streamServer, err = streaming.NewServer(ctx, streamServerConfig, s.stream)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create streaming server")
 	}
@@ -469,11 +509,11 @@ func New(
 	go func() {
 		defer close(s.stream.streamServerCloseCh)
 		if err := s.stream.streamServer.Start(true); err != nil && err != http.ErrServerClosed {
-			logrus.Fatalf("Failed to start streaming server: %v", err)
+			log.Fatalf(ctx, "Failed to start streaming server: %v", err)
 		}
 	}()
 
-	logrus.Debugf("sandboxes: %v", s.ContainerServer.ListSandboxes())
+	log.Debugf(ctx, "sandboxes: %v", s.ContainerServer.ListSandboxes())
 
 	// Start a configuration watcher for the default config
 	s.config.StartWatcher()
@@ -484,6 +524,32 @@ func New(
 	}
 
 	return s, nil
+}
+
+// wipeIfAppropriate takes a list of images. If the config's VersionFilePersist
+// indicates an upgrade has happened, it attempts to wipe that list of images.
+// This attempt is best-effort.
+func (s *Server) wipeIfAppropriate(ctx context.Context, imagesToDelete []string) {
+	if !s.config.InternalWipe {
+		return
+	}
+	// Check if our persistent version file is out of date.
+	// If so, we have upgrade, and we should wipe images.
+	shouldWipeImages, err := version.ShouldCrioWipe(s.config.VersionFilePersist)
+	if err != nil {
+		log.Warnf(ctx, "error encountered when checking whether cri-o should wipe images: %v", err)
+	}
+
+	// Note: some of these will fail if some aspect of the pod cleanup failed as well,
+	// but this is best-effort anyway, as the Kubelet will eventually cleanup images when
+	// disk usage gets too high.
+	if shouldWipeImages {
+		for _, img := range imagesToDelete {
+			if err := s.removeImage(ctx, img); err != nil {
+				log.Warnf(ctx, "failed to remove image %s: %v", img, err)
+			}
+		}
+	}
 }
 
 func (s *Server) addSandbox(sb *sandbox.Sandbox) error {
@@ -606,10 +672,10 @@ func (s *Server) MonitorsCloseChan() chan struct{} {
 
 // StartExitMonitor start a routine that monitors container exits
 // and updates the container status
-func (s *Server) StartExitMonitor() {
+func (s *Server) StartExitMonitor(ctx context.Context) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		logrus.Fatalf("Failed to create new watch: %v", err)
+		log.Fatalf(ctx, "Failed to create new watch: %v", err)
 	}
 	defer watcher.Close()
 
@@ -618,50 +684,50 @@ func (s *Server) StartExitMonitor() {
 		for {
 			select {
 			case event := <-watcher.Events:
-				logrus.Debugf("event: %v", event)
+				log.Debugf(ctx, "event: %v", event)
 				if event.Op&fsnotify.Create == fsnotify.Create {
 					containerID := filepath.Base(event.Name)
-					logrus.Debugf("container or sandbox exited: %v", containerID)
+					log.Debugf(ctx, "container or sandbox exited: %v", containerID)
 					c := s.GetContainer(containerID)
 					if c != nil {
-						logrus.Debugf("container exited and found: %v", containerID)
-						err := s.Runtime().UpdateContainerStatus(c)
+						log.Debugf(ctx, "container exited and found: %v", containerID)
+						err := s.Runtime().UpdateContainerStatus(ctx, c)
 						if err != nil {
-							logrus.Warnf("Failed to update container status %s: %v", containerID, err)
-						} else if err := s.ContainerStateToDisk(c); err != nil {
-							logrus.Warnf("unable to write containers %s state to disk: %v", c.ID(), err)
+							log.Warnf(ctx, "Failed to update container status %s: %v", containerID, err)
+						} else if err := s.ContainerStateToDisk(ctx, c); err != nil {
+							log.Warnf(ctx, "unable to write containers %s state to disk: %v", c.ID(), err)
 						}
 					} else {
 						sb := s.GetSandbox(containerID)
 						if sb != nil {
 							c := sb.InfraContainer()
 							if c == nil {
-								logrus.Warnf("no infra container set for sandbox: %v", containerID)
+								log.Warnf(ctx, "no infra container set for sandbox: %v", containerID)
 								continue
 							}
-							logrus.Debugf("sandbox exited and found: %v", containerID)
-							err := s.Runtime().UpdateContainerStatus(c)
+							log.Debugf(ctx, "sandbox exited and found: %v", containerID)
+							err := s.Runtime().UpdateContainerStatus(ctx, c)
 							if err != nil {
-								logrus.Warnf("Failed to update sandbox infra container status %s: %v", c.ID(), err)
-							} else if err := s.ContainerStateToDisk(c); err != nil {
-								logrus.Warnf("unable to write containers %s state to disk: %v", c.ID(), err)
+								log.Warnf(ctx, "Failed to update sandbox infra container status %s: %v", c.ID(), err)
+							} else if err := s.ContainerStateToDisk(ctx, c); err != nil {
+								log.Warnf(ctx, "unable to write containers %s state to disk: %v", c.ID(), err)
 							}
 						}
 					}
 				}
 			case err := <-watcher.Errors:
-				logrus.Debugf("watch error: %v", err)
+				log.Debugf(ctx, "watch error: %v", err)
 				close(done)
 				return
 			case <-s.monitorsChan:
-				logrus.Debug("closing exit monitor...")
+				log.Debugf(ctx, "closing exit monitor...")
 				close(done)
 				return
 			}
 		}
 	}()
 	if err := watcher.Add(s.config.ContainerExitsDir); err != nil {
-		logrus.Errorf("watcher.Add(%q) failed: %s", s.config.ContainerExitsDir, err)
+		log.Errorf(ctx, "watcher.Add(%q) failed: %s", s.config.ContainerExitsDir, err)
 		close(done)
 	}
 	<-done

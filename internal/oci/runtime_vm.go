@@ -11,18 +11,20 @@ import (
 	"syscall"
 	"time"
 
+	cgroups "github.com/containerd/cgroups/stats/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/namespaces"
 	client "github.com/containerd/containerd/runtime/v2/shim"
 	"github.com/containerd/containerd/runtime/v2/task"
 	"github.com/containerd/ttrpc"
-	"github.com/containers/libpod/v2/pkg/cgroups"
+	"github.com/containerd/typeurl"
+	"github.com/cri-o/cri-o/internal/log"
+	"github.com/cri-o/cri-o/server/metrics"
 	"github.com/cri-o/cri-o/utils"
 	"github.com/cri-o/cri-o/utils/errdefs"
 	"github.com/cri-o/cri-o/utils/fifo"
 	cio "github.com/cri-o/cri-o/utils/io"
 	cioutil "github.com/cri-o/cri-o/utils/ioutil"
-	"github.com/cri-o/cri-o/utils/typeurl"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -33,16 +35,14 @@ import (
 	utilexec "k8s.io/utils/exec"
 )
 
-const fifoGlobalDir = "/tmp/crio/fifo"
-
 // runtimeVM is the Runtime interface implementation that is more appropriate
 // for VM based container runtimes.
 type runtimeVM struct {
-	path string
-
-	ctx    context.Context
-	client *ttrpc.Client
-	task   task.TaskService
+	path    string
+	fifoDir string
+	ctx     context.Context
+	client  *ttrpc.Client
+	task    task.TaskService
 
 	sync.Mutex
 	ctrs map[string]containerInfo
@@ -53,7 +53,7 @@ type containerInfo struct {
 }
 
 // newRuntimeVM creates a new runtimeVM instance
-func newRuntimeVM(path string) RuntimeImpl {
+func newRuntimeVM(path, root string) RuntimeImpl {
 	logrus.Debug("oci.newRuntimeVM() start")
 	defer logrus.Debug("oci.newRuntimeVM() end")
 
@@ -70,29 +70,30 @@ func newRuntimeVM(path string) RuntimeImpl {
 	typeurl.Register(&rspec.WindowsResources{}, prefix, "opencontainers/runtime-spec", major, "WindowsResources")
 
 	return &runtimeVM{
-		path: path,
-		ctx:  context.Background(),
-		ctrs: make(map[string]containerInfo),
+		path:    path,
+		fifoDir: filepath.Join(root, "crio", "fifo"),
+		ctx:     context.Background(),
+		ctrs:    make(map[string]containerInfo),
 	}
 }
 
 // CreateContainer creates a container.
-func (r *runtimeVM) CreateContainer(c *Container, cgroupParent string, restore bool) (retErr error) {
-	logrus.Debug("runtimeVM.CreateContainer() start")
-	defer logrus.Debug("runtimeVM.CreateContainer() end")
+func (r *runtimeVM) CreateContainer(ctx context.Context, c *Container, cgroupParent string) (retErr error) {
+	log.Debugf(ctx, "runtimeVM.CreateContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.CreateContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
 	defer c.opLock.Unlock()
 
 	// First thing, we need to start the runtime daemon
-	if err := r.startRuntimeDaemon(c); err != nil {
+	if err := r.startRuntimeDaemon(ctx, c); err != nil {
 		return err
 	}
 
 	// Create IO fifos
 	containerIO, err := cio.NewContainerIO(c.ID(),
-		cio.WithNewFIFOs(fifoGlobalDir, c.terminal, c.stdin))
+		cio.WithNewFIFOs(r.fifoDir, c.terminal, c.stdin))
 	if err != nil {
 		return err
 	}
@@ -120,7 +121,7 @@ func (r *runtimeVM) CreateContainer(c *Container, cgroupParent string, restore b
 		if stderrCh != nil {
 			<-stderrCh
 		}
-		logrus.Debugf("Finish redirecting log file %q, closing it", c.LogPath())
+		log.Debugf(ctx, "Finish redirecting log file %q, closing it", c.LogPath())
 		f.Close()
 	}()
 
@@ -135,9 +136,9 @@ func (r *runtimeVM) CreateContainer(c *Container, cgroupParent string, restore b
 
 	defer func() {
 		if retErr != nil {
-			logrus.WithError(err).Warnf("Cleaning up container %s", c.ID())
+			log.Warnf(ctx, "Cleaning up container %s: %v", c.ID(), err)
 			if cleanupErr := r.deleteContainer(c, true); cleanupErr != nil {
-				logrus.WithError(cleanupErr).Infof("deleteContainer failed for container %s", c.ID())
+				log.Infof(ctx, "DeleteContainer failed for container %s: %v", c.ID(), cleanupErr)
 			}
 		}
 	}()
@@ -170,7 +171,7 @@ func (r *runtimeVM) CreateContainer(c *Container, cgroupParent string, restore b
 			return errors.Errorf("CreateContainer failed: %v", err)
 		}
 	case <-time.After(ContainerCreateTimeout):
-		if err := r.remove(r.ctx, c.ID(), ""); err != nil {
+		if err := r.remove(c.ID(), ""); err != nil {
 			return err
 		}
 		<-createdCh
@@ -180,9 +181,9 @@ func (r *runtimeVM) CreateContainer(c *Container, cgroupParent string, restore b
 	return nil
 }
 
-func (r *runtimeVM) startRuntimeDaemon(c *Container) error {
-	logrus.Debug("runtimeVM.startRuntimeDaemon() start")
-	defer logrus.Debug("runtimeVM.startRuntimeDaemon() end")
+func (r *runtimeVM) startRuntimeDaemon(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.startRuntimeDaemon() start")
+	defer log.Debugf(ctx, "runtimeVM.startRuntimeDaemon() end")
 
 	// Prepare the command to run
 	args := []string{"-id", c.ID()}
@@ -192,9 +193,8 @@ func (r *runtimeVM) startRuntimeDaemon(c *Container) error {
 	args = append(args, "start")
 
 	// Modify the runtime path so that it complies with v2 shim API
-	newRuntimePath := strings.ReplaceAll(r.path, "-", ".")
+	newRuntimePath := BuildContainerdBinaryName(r.path)
 
-	// Setup default namespace
 	r.ctx = namespaces.WithNamespace(r.ctx, namespaces.Default)
 
 	// Prepare the command to exec
@@ -224,7 +224,7 @@ func (r *runtimeVM) startRuntimeDaemon(c *Container) error {
 	go func() {
 		defer f.Close()
 		if _, err := io.Copy(os.Stderr, f); err != nil {
-			logrus.WithError(err).Error("copy shim log")
+			log.Errorf(ctx, "Copy shim log: %v", err)
 		}
 	}()
 
@@ -254,15 +254,15 @@ func (r *runtimeVM) startRuntimeDaemon(c *Container) error {
 }
 
 // StartContainer starts a container.
-func (r *runtimeVM) StartContainer(c *Container) error {
-	logrus.Debug("runtimeVM.StartContainer() start")
-	defer logrus.Debug("runtimeVM.StartContainer() end")
+func (r *runtimeVM) StartContainer(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.StartContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.StartContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
 	defer c.opLock.Unlock()
 
-	if err := r.start(r.ctx, c.ID(), ""); err != nil {
+	if err := r.start(c.ID(), ""); err != nil {
 		return err
 	}
 	c.state.Started = time.Now()
@@ -270,13 +270,13 @@ func (r *runtimeVM) StartContainer(c *Container) error {
 	// Spawn a goroutine waiting for the container to terminate. Once it
 	// happens, the container status is retrieved to be updated.
 	go func() {
-		_, err := r.wait(r.ctx, c.ID(), "")
+		_, err := r.wait(c.ID(), "")
 		if err == nil {
-			if err1 := r.updateContainerStatus(c); err1 != nil {
-				logrus.Warningf("error updating container status %v", err1)
+			if err1 := r.updateContainerStatus(ctx, c); err1 != nil {
+				log.Warnf(ctx, "error updating container status %v", err1)
 			}
 		} else {
-			logrus.Warningf("wait for %s returned: %v", c.ID(), err)
+			log.Warnf(ctx, "wait for %s returned: %v", c.ID(), err)
 		}
 	}()
 
@@ -284,11 +284,11 @@ func (r *runtimeVM) StartContainer(c *Container) error {
 }
 
 // ExecContainer prepares a streaming endpoint to execute a command in the container.
-func (r *runtimeVM) ExecContainer(c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	logrus.Debug("runtimeVM.ExecContainer() start")
-	defer logrus.Debug("runtimeVM.ExecContainer() end")
+func (r *runtimeVM) ExecContainer(ctx context.Context, c *Container, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+	log.Debugf(ctx, "runtimeVM.ExecContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.ExecContainer() end")
 
-	exitCode, err := r.execContainerCommon(c, cmd, 0, stdin, stdout, stderr, tty, resize)
+	exitCode, err := r.execContainerCommon(ctx, c, cmd, 0, stdin, stdout, stderr, tty, resize)
 	if err != nil {
 		return err
 	}
@@ -303,15 +303,15 @@ func (r *runtimeVM) ExecContainer(c *Container, cmd []string, stdin io.Reader, s
 }
 
 // ExecSyncContainer execs a command in a container and returns it's stdout, stderr and return code.
-func (r *runtimeVM) ExecSyncContainer(c *Container, command []string, timeout int64) (*ExecSyncResponse, error) {
-	logrus.Debug("runtimeVM.ExecSyncContainer() start")
-	defer logrus.Debug("runtimeVM.ExecSyncContainer() end")
+func (r *runtimeVM) ExecSyncContainer(ctx context.Context, c *Container, command []string, timeout int64) (*ExecSyncResponse, error) {
+	log.Debugf(ctx, "runtimeVM.ExecSyncContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.ExecSyncContainer() end")
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	stdout := cioutil.NewNopWriteCloser(&stdoutBuf)
 	stderr := cioutil.NewNopWriteCloser(&stderrBuf)
 
-	exitCode, err := r.execContainerCommon(c, command, timeout, nil, stdout, stderr, c.terminal, nil)
+	exitCode, err := r.execContainerCommon(ctx, c, command, timeout, nil, stdout, stderr, c.terminal, nil)
 	if err != nil {
 		return nil, &ExecSyncError{
 			ExitCode: -1,
@@ -326,9 +326,9 @@ func (r *runtimeVM) ExecSyncContainer(c *Container, command []string, timeout in
 	}, nil
 }
 
-func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int64, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) (exitCode int32, retErr error) {
-	logrus.Debug("runtimeVM.execContainerCommon() start")
-	defer logrus.Debug("runtimeVM.execContainerCommon() end")
+func (r *runtimeVM) execContainerCommon(ctx context.Context, c *Container, cmd []string, timeout int64, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) (exitCode int32, retErr error) {
+	log.Debugf(ctx, "runtimeVM.execContainerCommon() start")
+	defer log.Debugf(ctx, "runtimeVM.execContainerCommon() end")
 
 	// Cancel the context before returning to ensure goroutines are stopped.
 	ctx, cancel := context.WithCancel(r.ctx)
@@ -341,7 +341,7 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 	}
 
 	// Create IO fifos
-	execIO, err := cio.NewExecIO(c.ID(), fifoGlobalDir, tty, stdin != nil)
+	execIO, err := cio.NewExecIO(c.ID(), r.fifoDir, tty, stdin != nil)
 	if err != nil {
 		return -1, errdefs.FromGRPC(err)
 	}
@@ -365,7 +365,7 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 			if closeIOChan != nil {
 				<-closeIOChan
 			}
-			return r.closeIO(ctx, c.ID(), execID)
+			return r.closeIO(c.ID(), execID)
 		},
 	})
 
@@ -388,20 +388,20 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 	}
 
 	// Create the "exec" process
-	if _, err = r.task.Exec(ctx, request); err != nil {
+	if _, err = r.task.Exec(r.ctx, request); err != nil {
 		return -1, errdefs.FromGRPC(err)
 	}
 
 	defer func() {
 		if retErr != nil {
-			if err := r.remove(ctx, c.ID(), execID); err != nil {
-				logrus.Debugf("unable to remove container %s: %v", c.ID(), err)
+			if err := r.remove(c.ID(), execID); err != nil {
+				log.Debugf(ctx, "unable to remove container %s: %v", c.ID(), err)
 			}
 		}
 	}()
 
 	// Start the process
-	if err := r.start(ctx, c.ID(), execID); err != nil {
+	if err := r.start(c.ID(), execID); err != nil {
 		return -1, err
 	}
 
@@ -412,10 +412,10 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 	// Initialize terminal resizing if necessary
 	if resize != nil {
 		kubecontainer.HandleResizing(resize, func(size remotecommand.TerminalSize) {
-			logrus.Debugf("Got a resize event: %+v", size)
+			log.Debugf(ctx, "Got a resize event: %+v", size)
 
-			if err := r.resizePty(ctx, c.ID(), execID, size); err != nil {
-				logrus.Warnf("Failed to resize terminal: %v", err)
+			if err := r.resizePty(c.ID(), execID, size); err != nil {
+				log.Warnf(ctx, "Failed to resize terminal: %v", err)
 			}
 		})
 	}
@@ -433,7 +433,7 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 	execCh := make(chan error)
 	go func() {
 		// Wait for the process to terminate
-		exitCode, err = r.wait(ctx, c.ID(), execID)
+		exitCode, err = r.wait(c.ID(), execID)
 		if err != nil {
 			execCh <- err
 		}
@@ -444,13 +444,13 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 	select {
 	case err = <-execCh:
 		if err != nil {
-			if killErr := r.kill(ctx, c.ID(), execID, syscall.SIGKILL, false); killErr != nil {
+			if killErr := r.kill(c.ID(), execID, syscall.SIGKILL, false); killErr != nil {
 				return -1, killErr
 			}
 			return -1, err
 		}
 	case <-timeoutCh:
-		if killErr := r.kill(ctx, c.ID(), execID, syscall.SIGKILL, false); killErr != nil {
+		if killErr := r.kill(c.ID(), execID, syscall.SIGKILL, false); killErr != nil {
 			return -1, killErr
 		}
 		<-execCh
@@ -459,8 +459,8 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 
 	if err == nil {
 		// Delete the process
-		if err := r.remove(ctx, c.ID(), execID); err != nil {
-			logrus.Debugf("unable to remove container %s: %v", c.ID(), err)
+		if err := r.remove(c.ID(), execID); err != nil {
+			log.Debugf(ctx, "unable to remove container %s: %v", c.ID(), err)
 		}
 	}
 
@@ -468,9 +468,9 @@ func (r *runtimeVM) execContainerCommon(c *Container, cmd []string, timeout int6
 }
 
 // UpdateContainer updates container resources
-func (r *runtimeVM) UpdateContainer(c *Container, res *rspec.LinuxResources) error {
-	logrus.Debug("runtimeVM.UpdateContainer() start")
-	defer logrus.Debug("runtimeVM.UpdateContainer() end")
+func (r *runtimeVM) UpdateContainer(ctx context.Context, c *Container, res *rspec.LinuxResources) error {
+	log.Debugf(ctx, "runtimeVM.UpdateContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.UpdateContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
@@ -494,8 +494,8 @@ func (r *runtimeVM) UpdateContainer(c *Container, res *rspec.LinuxResources) err
 
 // StopContainer stops a container. Timeout is given in seconds.
 func (r *runtimeVM) StopContainer(ctx context.Context, c *Container, timeout int64) error {
-	logrus.Debug("runtimeVM.StopContainer() start")
-	defer logrus.Debug("runtimeVM.StopContainer() end")
+	log.Debugf(ctx, "runtimeVM.StopContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.StopContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
@@ -514,7 +514,7 @@ func (r *runtimeVM) StopContainer(ctx context.Context, c *Container, timeout int
 		// errdefs.ErrNotFound actually comes from a closed connection, which is expected
 		// when stoping the container, with the agent and the VM going off. In such case.
 		// let's just ignore the error.
-		if _, err := r.wait(ctx, c.ID(), ""); err != nil && !errors.Is(err, errdefs.ErrNotFound) {
+		if _, err := r.wait(c.ID(), ""); err != nil && !errors.Is(err, errdefs.ErrNotFound) {
 			stopCh <- errdefs.FromGRPC(err)
 		}
 
@@ -526,7 +526,7 @@ func (r *runtimeVM) StopContainer(ctx context.Context, c *Container, timeout int
 	if timeout > 0 {
 		sig = c.StopSignal()
 		// Send a stopping signal to the container
-		if err := r.kill(ctx, c.ID(), "", sig, false); err != nil {
+		if err := r.kill(c.ID(), "", sig, false); err != nil {
 			return err
 		}
 
@@ -537,17 +537,17 @@ func (r *runtimeVM) StopContainer(ctx context.Context, c *Container, timeout int
 			c.state.Finished = time.Now()
 			return nil
 		}
-		logrus.Warnf("%v", err)
+		log.Warnf(ctx, "%v", err)
 	}
 
 	sig = syscall.SIGKILL
 	// Send a SIGKILL signal to the container
-	if err := r.kill(ctx, c.ID(), "", sig, false); err != nil {
+	if err := r.kill(c.ID(), "", sig, false); err != nil {
 		return err
 	}
 
 	if err := r.waitCtrTerminate(sig, stopCh, killContainerTimeout); err != nil {
-		logrus.Errorf("%v", err)
+		log.Errorf(ctx, "%v", err)
 		return err
 	}
 
@@ -565,9 +565,9 @@ func (r *runtimeVM) waitCtrTerminate(sig syscall.Signal, stopCh chan error, time
 }
 
 // DeleteContainer deletes a container.
-func (r *runtimeVM) DeleteContainer(c *Container) error {
-	logrus.Debug("runtimeVM.DeleteContainer() start")
-	defer logrus.Debug("runtimeVM.DeleteContainer() end")
+func (r *runtimeVM) DeleteContainer(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.DeleteContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.DeleteContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
@@ -591,7 +591,7 @@ func (r *runtimeVM) deleteContainer(c *Container, force bool) error {
 		return err
 	}
 
-	if err := r.remove(r.ctx, c.ID(), ""); err != nil && !force {
+	if err := r.remove(c.ID(), ""); err != nil && !force {
 		return err
 	}
 
@@ -608,23 +608,23 @@ func (r *runtimeVM) deleteContainer(c *Container, force bool) error {
 }
 
 // UpdateContainerStatus refreshes the status of the container.
-func (r *runtimeVM) UpdateContainerStatus(c *Container) error {
-	logrus.Debug("runtimeVM.UpdateContainerStatus() start")
-	defer logrus.Debug("runtimeVM.UpdateContainerStatus() end")
+func (r *runtimeVM) UpdateContainerStatus(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.UpdateContainerStatus() start")
+	defer log.Debugf(ctx, "runtimeVM.UpdateContainerStatus() end")
 
 	// Lock the container
 	c.opLock.Lock()
 	defer c.opLock.Unlock()
 
-	return r.updateContainerStatus(c)
+	return r.updateContainerStatus(ctx, c)
 }
 
 // updateContainerStatus is a UpdateContainerStatus helper, which actually does the container's
 // status refresh.
 // It does **not** Lock the container, thus it's the caller responsibility to do so, when needed.
-func (r *runtimeVM) updateContainerStatus(c *Container) error {
-	logrus.Debug("runtimeVM.updateContainerStatus() start")
-	defer logrus.Debug("runtimeVM.updateContainerStatus() end")
+func (r *runtimeVM) updateContainerStatus(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.updateContainerStatus() start")
+	defer log.Debugf(ctx, "runtimeVM.updateContainerStatus() end")
 
 	// This can happen on restore, for example if we switch the runtime type
 	// for a container from "oci" to "vm" for the same runtime.
@@ -664,15 +664,26 @@ func (r *runtimeVM) updateContainerStatus(c *Container) error {
 		oomFilePath := filepath.Join(c.bundlePath, "oom")
 		if _, err = os.Stat(oomFilePath); err == nil {
 			c.state.OOMKilled = true
+
+			// Collect total metric
+			metrics.CRIOContainersOOMTotal.Inc()
+
+			// Collect metric by container name
+			counter, err := metrics.CRIOContainersOOM.GetMetricWithLabelValues(c.Name())
+			if err != nil {
+				log.Warnf(ctx, "Unable to write OOM metric by container: %v", err)
+			} else {
+				counter.Inc()
+			}
 		}
 	}
 	return nil
 }
 
 // PauseContainer pauses a container.
-func (r *runtimeVM) PauseContainer(c *Container) error {
-	logrus.Debug("runtimeVM.PauseContainer() start")
-	defer logrus.Debug("runtimeVM.PauseContainer() end")
+func (r *runtimeVM) PauseContainer(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.PauseContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.PauseContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
@@ -688,9 +699,9 @@ func (r *runtimeVM) PauseContainer(c *Container) error {
 }
 
 // UnpauseContainer unpauses a container.
-func (r *runtimeVM) UnpauseContainer(c *Container) error {
-	logrus.Debug("runtimeVM.UnpauseContainer() start")
-	defer logrus.Debug("runtimeVM.UnpauseContainer() end")
+func (r *runtimeVM) UnpauseContainer(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.UnpauseContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.UnpauseContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
@@ -706,9 +717,9 @@ func (r *runtimeVM) UnpauseContainer(c *Container) error {
 }
 
 // ContainerStats provides statistics of a container.
-func (r *runtimeVM) ContainerStats(c *Container, _ string) (*ContainerStats, error) {
-	logrus.Debug("runtimeVM.ContainerStats() start")
-	defer logrus.Debug("runtimeVM.ContainerStats() end")
+func (r *runtimeVM) ContainerStats(ctx context.Context, c *Container, _ string) (*ContainerStats, error) {
+	log.Debugf(ctx, "runtimeVM.ContainerStats() start")
+	defer log.Debugf(ctx, "runtimeVM.ContainerStats() end")
 
 	// Lock the container with a shared lock
 	c.opLock.RLock()
@@ -729,37 +740,97 @@ func (r *runtimeVM) ContainerStats(c *Container, _ string) (*ContainerStats, err
 		return nil, errors.Wrap(err, "failed to extract container metrics")
 	}
 
-	metrics, ok := stats.(*cgroups.Metrics)
+	m, ok := stats.(*cgroups.Metrics)
 	if !ok {
 		return nil, errors.Errorf("Unknown stats type %T", stats)
 	}
 
-	return metricsToCtrStats(c, metrics), nil
+	return metricsToCtrStats(ctx, c, m), nil
+}
+
+func metricsToCtrStats(ctx context.Context, c *Container, m *cgroups.Metrics) *ContainerStats {
+	var (
+		blockInput      uint64
+		blockOutput     uint64
+		cpu             float64
+		cpuNano         uint64
+		memLimit        uint64
+		memPerc         float64
+		memUsage        uint64
+		netInput        uint64
+		netOutput       uint64
+		pids            uint64
+		workingSetBytes uint64
+	)
+
+	if m != nil {
+		pids = m.Pids.Current
+
+		cpuNano = m.CPU.Usage.Total
+		cpu = genericCalculateCPUPercent(cpuNano, m.CPU.Usage.PerCPU)
+
+		memUsage = m.Memory.Usage.Usage
+		memLimit = getMemLimit(m.Memory.Usage.Limit)
+		memPerc = float64(memUsage) / float64(memLimit)
+		if memUsage > m.Memory.TotalInactiveFile {
+			workingSetBytes = memUsage - m.Memory.TotalInactiveFile
+		} else {
+			log.Debugf(ctx,
+				"Unable to account working set stats: total_inactive_file (%d) > memory usage (%d)",
+				m.Memory.TotalInactiveFile, memUsage,
+			)
+		}
+
+		for _, entry := range m.Blkio.IoServiceBytesRecursive {
+			switch strings.ToLower(entry.Op) {
+			case "read":
+				blockInput += entry.Value
+			case "write":
+				blockOutput += entry.Value
+			}
+		}
+	}
+
+	return &ContainerStats{
+		BlockInput:      blockInput,
+		BlockOutput:     blockOutput,
+		Container:       c.ID(),
+		CPU:             cpu,
+		CPUNano:         cpuNano,
+		MemLimit:        memLimit,
+		MemUsage:        memUsage,
+		MemPerc:         memPerc,
+		NetInput:        netInput,
+		NetOutput:       netOutput,
+		PIDs:            pids,
+		SystemNano:      time.Now().UnixNano(),
+		WorkingSetBytes: workingSetBytes,
+	}
 }
 
 // SignalContainer sends a signal to a container process.
-func (r *runtimeVM) SignalContainer(c *Container, sig syscall.Signal) error {
-	logrus.Debug("runtimeVM.SignalContainer() start")
-	defer logrus.Debug("runtimeVM.SignalContainer() end")
+func (r *runtimeVM) SignalContainer(ctx context.Context, c *Container, sig syscall.Signal) error {
+	log.Debugf(ctx, "runtimeVM.SignalContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.SignalContainer() end")
 
 	// Lock the container
 	c.opLock.Lock()
 	defer c.opLock.Unlock()
 
-	return r.kill(r.ctx, c.ID(), "", sig, true)
+	return r.kill(c.ID(), "", sig, true)
 }
 
 // AttachContainer attaches IO to a running container.
-func (r *runtimeVM) AttachContainer(c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
-	logrus.Debug("runtimeVM.AttachContainer() start")
-	defer logrus.Debug("runtimeVM.AttachContainer() end")
+func (r *runtimeVM) AttachContainer(ctx context.Context, c *Container, inputStream io.Reader, outputStream, errorStream io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+	log.Debugf(ctx, "runtimeVM.AttachContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.AttachContainer() end")
 
 	// Initialize terminal resizing
 	kubecontainer.HandleResizing(resize, func(size remotecommand.TerminalSize) {
-		logrus.Debugf("Got a resize event: %+v", size)
+		log.Debugf(ctx, "Got a resize event: %+v", size)
 
-		if err := r.resizePty(r.ctx, c.ID(), "", size); err != nil {
-			logrus.Warnf("Failed to resize terminal: %v", err)
+		if err := r.resizePty(c.ID(), "", size); err != nil {
+			log.Warnf(ctx, "Failed to resize terminal: %v", err)
 		}
 	})
 
@@ -777,7 +848,7 @@ func (r *runtimeVM) AttachContainer(c *Container, inputStream io.Reader, outputS
 		Tty:       tty,
 		StdinOnce: c.stdinOnce,
 		CloseStdin: func() error {
-			return r.closeIO(r.ctx, c.ID(), "")
+			return r.closeIO(c.ID(), "")
 		},
 	}
 
@@ -785,17 +856,17 @@ func (r *runtimeVM) AttachContainer(c *Container, inputStream io.Reader, outputS
 }
 
 // PortForwardContainer forwards the specified port provides statistics of a container.
-func (r *runtimeVM) PortForwardContainer(context.Context, *Container, string, int32, io.ReadWriteCloser) error {
-	logrus.Debug("runtimeVM.PortForwardContainer() start")
-	defer logrus.Debug("runtimeVM.PortForwardContainer() end")
+func (r *runtimeVM) PortForwardContainer(ctx context.Context, c *Container, netNsPath string, port int32, stream io.ReadWriteCloser) error {
+	log.Debugf(ctx, "runtimeVM.PortForwardContainer() start")
+	defer log.Debugf(ctx, "runtimeVM.PortForwardContainer() end")
 
 	return nil
 }
 
 // ReopenContainerLog reopens the log file of a container.
-func (r *runtimeVM) ReopenContainerLog(c *Container) error {
-	logrus.Debug("runtimeVM.ReopenContainerLog() start")
-	defer logrus.Debug("runtimeVM.ReopenContainerLog() end")
+func (r *runtimeVM) ReopenContainerLog(ctx context.Context, c *Container) error {
+	log.Debugf(ctx, "runtimeVM.ReopenContainerLog() start")
+	defer log.Debugf(ctx, "runtimeVM.ReopenContainerLog() end")
 
 	return nil
 }
@@ -804,8 +875,8 @@ func (r *runtimeVM) WaitContainerStateStopped(ctx context.Context, c *Container)
 	return nil
 }
 
-func (r *runtimeVM) start(ctx context.Context, ctrID, execID string) error {
-	if _, err := r.task.Start(ctx, &task.StartRequest{
+func (r *runtimeVM) start(ctrID, execID string) error {
+	if _, err := r.task.Start(r.ctx, &task.StartRequest{
 		ID:     ctrID,
 		ExecID: execID,
 	}); err != nil {
@@ -815,8 +886,8 @@ func (r *runtimeVM) start(ctx context.Context, ctrID, execID string) error {
 	return nil
 }
 
-func (r *runtimeVM) wait(ctx context.Context, ctrID, execID string) (int32, error) {
-	resp, err := r.task.Wait(ctx, &task.WaitRequest{
+func (r *runtimeVM) wait(ctrID, execID string) (int32, error) {
+	resp, err := r.task.Wait(r.ctx, &task.WaitRequest{
 		ID:     ctrID,
 		ExecID: execID,
 	})
@@ -830,8 +901,8 @@ func (r *runtimeVM) wait(ctx context.Context, ctrID, execID string) (int32, erro
 	return int32(resp.ExitStatus), nil
 }
 
-func (r *runtimeVM) kill(ctx context.Context, ctrID, execID string, signal syscall.Signal, all bool) error {
-	if _, err := r.task.Kill(ctx, &task.KillRequest{
+func (r *runtimeVM) kill(ctrID, execID string, signal syscall.Signal, all bool) error {
+	if _, err := r.task.Kill(r.ctx, &task.KillRequest{
 		ID:     ctrID,
 		ExecID: execID,
 		Signal: uint32(signal),
@@ -843,8 +914,8 @@ func (r *runtimeVM) kill(ctx context.Context, ctrID, execID string, signal sysca
 	return nil
 }
 
-func (r *runtimeVM) remove(ctx context.Context, ctrID, execID string) error {
-	if _, err := r.task.Delete(ctx, &task.DeleteRequest{
+func (r *runtimeVM) remove(ctrID, execID string) error {
+	if _, err := r.task.Delete(r.ctx, &task.DeleteRequest{
 		ID:     ctrID,
 		ExecID: execID,
 	}); err != nil && !errors.Is(err, ttrpc.ErrClosed) {
@@ -854,8 +925,8 @@ func (r *runtimeVM) remove(ctx context.Context, ctrID, execID string) error {
 	return nil
 }
 
-func (r *runtimeVM) resizePty(ctx context.Context, ctrID, execID string, size remotecommand.TerminalSize) error {
-	_, err := r.task.ResizePty(ctx, &task.ResizePtyRequest{
+func (r *runtimeVM) resizePty(ctrID, execID string, size remotecommand.TerminalSize) error {
+	_, err := r.task.ResizePty(r.ctx, &task.ResizePtyRequest{
 		ID:     ctrID,
 		ExecID: execID,
 		Width:  uint32(size.Width),
@@ -868,8 +939,8 @@ func (r *runtimeVM) resizePty(ctx context.Context, ctrID, execID string, size re
 	return nil
 }
 
-func (r *runtimeVM) closeIO(ctx context.Context, ctrID, execID string) error {
-	_, err := r.task.CloseIO(ctx, &task.CloseIORequest{
+func (r *runtimeVM) closeIO(ctrID, execID string) error {
+	_, err := r.task.CloseIO(r.ctx, &task.CloseIORequest{
 		ID:     ctrID,
 		ExecID: execID,
 		Stdin:  true,

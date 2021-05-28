@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/containers/storage"
+	crioann "github.com/cri-o/cri-o/pkg/annotations"
 	"github.com/cri-o/cri-o/pkg/config"
 
 	. "github.com/onsi/ginkgo"
@@ -459,15 +460,28 @@ var _ = t.Describe("Config", func() {
 			Expect(err).To(BeNil())
 		})
 
-		It("should fail if executable not in $PATH", func() {
+		It("should fail if default executable not in $PATH", func() {
 			// Given
 			sut.Runtimes[invalidPath] = &config.RuntimeHandler{RuntimePath: ""}
+			sut.DefaultRuntime = invalidPath
 
 			// When
 			err := sut.RuntimeConfig.ValidateRuntimes()
 
 			// Then
 			Expect(err).NotTo(BeNil())
+		})
+
+		It("should not fail if non-default executable not in $PATH", func() {
+			// Given
+			sut.Runtimes[invalidPath] = &config.RuntimeHandler{RuntimePath: ""}
+			sut.DefaultRuntime = "runc"
+
+			// When
+			err := sut.RuntimeConfig.ValidateRuntimes()
+
+			// Then
+			Expect(err).To(BeNil())
 		})
 
 		It("should fail with wrong but set runtime_path", func() {
@@ -493,6 +507,35 @@ var _ = t.Describe("Config", func() {
 
 			// Then
 			Expect(err).NotTo(BeNil())
+		})
+
+		It("should fail with wrong allowed_annotation", func() {
+			// Given
+			sut.Runtimes["runc"] = &config.RuntimeHandler{
+				RuntimePath:        validFilePath,
+				AllowedAnnotations: []string{"wrong"},
+			}
+
+			// When
+			err := sut.RuntimeConfig.ValidateRuntimes()
+
+			// Then
+			Expect(err).NotTo(BeNil())
+		})
+		It("should have allowed and disallowed annotation", func() {
+			// Given
+			sut.Runtimes["runc"] = &config.RuntimeHandler{
+				RuntimePath:        validFilePath,
+				AllowedAnnotations: []string{crioann.DevicesAnnotation},
+			}
+
+			// When
+			err := sut.RuntimeConfig.ValidateRuntimes()
+
+			// Then
+			Expect(err).To(BeNil())
+			Expect(sut.Runtimes["runc"].AllowedAnnotations).To(ContainElement(crioann.DevicesAnnotation))
+			Expect(sut.Runtimes["runc"].DisallowedAnnotations).NotTo(ContainElement(crioann.DevicesAnnotation))
 		})
 	})
 
@@ -942,6 +985,34 @@ var _ = t.Describe("Config", func() {
 
 			// Then
 			Expect(err).To(BeNil())
+		})
+	})
+
+	t.Describe("ValidateRuntimeVMBinaryPattern", func() {
+		It("should succeed when using RuntimeTypeVM and runtime_path follows the containerd pattern", func() {
+			// Given
+			sut.Runtimes["kata"] = &config.RuntimeHandler{
+				RuntimePath: "containerd-shim-kata-qemu-v2", RuntimeType: config.RuntimeTypeVM,
+			}
+
+			// When
+			ok := sut.Runtimes["kata"].ValidateRuntimeVMBinaryPattern()
+
+			// Then
+			Expect(ok).To(BeTrue())
+		})
+
+		It("should fail when using RuntimeTypeVM and runtime_path does not follow the containerd pattern", func() {
+			// Given
+			sut.Runtimes["kata"] = &config.RuntimeHandler{
+				RuntimePath: "kata-runtime", RuntimeType: config.RuntimeTypeVM,
+			}
+
+			// When
+			ok := sut.Runtimes["kata"].ValidateRuntimeVMBinaryPattern()
+
+			// Then
+			Expect(ok).To(BeFalse())
 		})
 	})
 })

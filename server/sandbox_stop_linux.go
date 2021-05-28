@@ -8,32 +8,14 @@ import (
 	"github.com/containers/storage"
 	"github.com/cri-o/cri-o/internal/lib/sandbox"
 	"github.com/cri-o/cri-o/internal/log"
+	oci "github.com/cri-o/cri-o/internal/oci"
 	"github.com/cri-o/cri-o/internal/runtimehandlerhooks"
-	"github.com/cri-o/cri-o/server/cri/types"
 	"github.com/pkg/errors"
 	"golang.org/x/net/context"
 	"golang.org/x/sync/errgroup"
 )
 
-func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRequest) error {
-	log.Infof(ctx, "Stopping pod sandbox: %s", req.PodSandboxID)
-	sb, err := s.getPodSandboxFromRequest(req.PodSandboxID)
-	if err != nil {
-		if err == sandbox.ErrIDEmpty {
-			return err
-		}
-		if err == errSandboxNotCreated {
-			return fmt.Errorf("StopPodSandbox failed as the sandbox is not created: %s", sb.ID())
-		}
-
-		// If the sandbox isn't found we just return an empty response to adhere
-		// the CRI interface which expects to not error out in not found
-		// cases.
-
-		log.Warnf(ctx, "could not get sandbox %s, it's probably been stopped already: %v", req.PodSandboxID, err)
-		log.Debugf(ctx, "StopPodSandboxResponse %s", req.PodSandboxID)
-		return nil
-	}
+func (s *Server) stopPodSandbox(ctx context.Context, sb *sandbox.Sandbox) error {
 	stopMutex := sb.StopMutex()
 	stopMutex.Lock()
 	defer stopMutex.Unlock()
@@ -43,15 +25,15 @@ func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRe
 		return err
 	}
 
-	// Get high-performance runtime hook to trigger preStop step for each container
-	hooks, err := runtimehandlerhooks.GetRuntimeHandlerHooks(ctx, &s.config, sb.RuntimeHandler(), s.Runtime())
-	if err != nil {
-		return fmt.Errorf("failed to get runtime handler %q hooks", sb.RuntimeHandler())
-	}
-
 	if sb.Stopped() {
 		log.Infof(ctx, "Stopped pod sandbox (already stopped): %s", sb.ID())
 		return nil
+	}
+
+	// Get high-performance runtime hook to trigger preStop step for each container
+	hooks, err := runtimehandlerhooks.GetRuntimeHandlerHooks(ctx, &s.config, sb.RuntimeHandler(), sb.Annotations())
+	if err != nil {
+		return fmt.Errorf("failed to get runtime handler %q hooks", sb.RuntimeHandler())
 	}
 
 	podInfraContainer := sb.InfraContainer()
@@ -66,7 +48,8 @@ func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRe
 			max = len(containers)
 		}
 		for _, ctr := range containers[i:max] {
-			if ctr.IsAlive() == nil {
+			cStatus := ctr.State()
+			if cStatus.Status != oci.ContainerStateStopped {
 				if ctr.ID() == podInfraContainer.ID() {
 					continue
 				}
@@ -79,7 +62,7 @@ func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRe
 						// assume container already umounted
 						log.Warnf(ctx, "failed to stop container %s in pod sandbox %s: %v", c.Name(), sb.ID(), err)
 					}
-					if err := s.ContainerStateToDisk(c); err != nil {
+					if err := s.ContainerStateToDisk(ctx, c); err != nil {
 						return errors.Wrapf(err, "write container %q state do disk", c.Name())
 					}
 					return nil
@@ -96,10 +79,12 @@ func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRe
 		}
 	}
 
-	// only stop the infra container if it exists and is still alive
-	if podInfraContainer != nil && !podInfraContainer.Spoofed() && podInfraContainer.IsAlive() == nil {
-		if err := s.StopContainerAndWait(ctx, podInfraContainer, int64(10)); err != nil {
-			return fmt.Errorf("failed to stop infra container for pod sandbox %s: %v", sb.ID(), err)
+	if podInfraContainer != nil {
+		podInfraStatus := podInfraContainer.State()
+		if podInfraStatus.Status != oci.ContainerStateStopped {
+			if err := s.StopContainerAndWait(ctx, podInfraContainer, int64(10)); err != nil {
+				return fmt.Errorf("failed to stop infra container for pod sandbox %s: %v", sb.ID(), err)
+			}
 		}
 	}
 
@@ -110,7 +95,7 @@ func (s *Server) stopPodSandbox(ctx context.Context, req *types.StopPodSandboxRe
 	if err := s.StorageRuntimeServer().StopContainer(sb.ID()); err != nil && !errors.Is(err, storage.ErrContainerUnknown) {
 		log.Warnf(ctx, "failed to stop sandbox container in pod sandbox %s: %v", sb.ID(), err)
 	}
-	if err := s.ContainerStateToDisk(podInfraContainer); err != nil {
+	if err := s.ContainerStateToDisk(ctx, podInfraContainer); err != nil {
 		log.Warnf(ctx, "error writing pod infra container %q state to disk: %v", podInfraContainer.ID(), err)
 	}
 
