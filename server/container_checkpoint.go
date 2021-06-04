@@ -100,7 +100,7 @@ func (s *Server) CheckpointContainer(ctx context.Context, req *types.CheckpointC
 				Container: ctr.ID(),
 				ContainerCheckpointOptions: libpod.ContainerCheckpointOptions{
 					TargetFile:  filepath.Join(podCheckpointDirectory, ctr.Name()+".tar"),
-					Keep:        req.Options.CommonOptions.Keep,
+					Keep:        true,
 					KeepRunning: req.Options.LeaveRunning,
 				},
 			}
@@ -119,7 +119,7 @@ func (s *Server) CheckpointContainer(ctx context.Context, req *types.CheckpointC
 			Container: req.ID,
 			ContainerCheckpointOptions: libpod.ContainerCheckpointOptions{
 				TargetFile:  req.Options.CommonOptions.Archive,
-				Keep:        req.Options.CommonOptions.Keep,
+				Keep:        true,
 				KeepRunning: req.Options.LeaveRunning,
 			},
 		}

@@ -1332,7 +1332,6 @@ func (r *runtimeOCI) CheckpointContainer(c *Container, specgen *rspec.Spec, leav
 
 // RestoreContainer restores a container.
 func (r *runtimeOCI) RestoreContainer(c *Container, sbSpec *rspec.Spec, infraPid int, cgroupParent string) error {
-
 	if err := r.checkpointRestoreSupported(); err != nil {
 		return err
 	}

@@ -105,7 +105,7 @@ func (s *Server) RestoreContainer(ctx context.Context, req *types.RestoreContain
 			Pod:       req.Options.PodSandboxID,
 			ContainerCheckpointOptions: libpod.ContainerCheckpointOptions{
 				TargetFile: req.Options.CommonOptions.Archive,
-				Keep:       req.Options.CommonOptions.Keep,
+				Keep:       true,
 			},
 		}
 		opts = append(opts, localOpts)
